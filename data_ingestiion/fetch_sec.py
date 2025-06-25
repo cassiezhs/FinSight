@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import re
 import psycopg2
+import yfinance as yf
 
 def get_cik(ticker):
     url = f"https://www.sec.gov/files/company_tickers.json"
@@ -31,7 +32,7 @@ def get_latest_10k_url(cik):
             return doc_url
     return None
 
-# 示例：
+
 cik = get_cik("AAPL")
 print(get_latest_10k_url(cik))
 
