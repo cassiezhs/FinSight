@@ -1,6 +1,6 @@
 # FinSight
 # 📈 Financial Data Pipeline and Insight Dashboard
-
+!(title_img.png)
 This dashboard combinexs **stock market performance** with **company financial narrative** (extracted from 10-K filings) to help analysts, investors, and researchers understand how management commentary aligns with actual stock trends.
 
 ---
