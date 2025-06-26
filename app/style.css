@@ -1,0 +1,8 @@
+.liquid-glass {
+  background: rgba(255, 255, 255, 0.1); /* Semi-transparent */
+  border-radius: 16px;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(12px); /* Frosted blur */
+  -webkit-backdrop-filter: blur(12px); /* Safari support */
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}

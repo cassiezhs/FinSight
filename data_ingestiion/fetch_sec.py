@@ -68,77 +68,55 @@ def get_10k_html_url(doc_index_url):
     print("No HTML file found.")
     return None
 
-
-def extract_mdna_section(html_url):
-    headers = {"User-Agent": "zihanshao1996@gmail.com"}
-    html = requests.get(html_url, headers=headers).text
-    soup = BeautifulSoup(html, 'html.parser')
-    text = soup.get_text(separator=' ', strip=True)
-
-    # 多种形式的 ITEM 7
-    mdna_start = re.search(r'(Item\s*7[^A-Za-z]*\.?\s*(Management.*?Analysis.*?Operations)?)', text, re.IGNORECASE)
-    mdna_end = re.search(r'(Item\s*7A|Item\s*8)', text, re.IGNORECASE)
-
-    if mdna_start and mdna_end:
-        start = mdna_start.start()
-        end = mdna_end.start()
-        return text[start:end]
-    
-    # fallback: just return the text chunk around Item 7
-    elif mdna_start:
-        start = mdna_start.start()
-        return text[start:start + 5000]  # 返回5000字符以内
-
-    return "MD&A section not found"
-
-# 示例运行
-url = get_latest_10k_url(get_cik("AAPL"))
-html_url = get_10k_html_url(url)
-mdna = extract_mdna_section(html_url)
-
 def extract_mdna_from_main_html(html_url):
     headers = {"User-Agent": "zihanshao1996@gmail.com"}
     html = requests.get(html_url, headers=headers).text
     soup = BeautifulSoup(html, 'html.parser')
     text = soup.get_text(separator='\n', strip=True)
 
-    # Debug print
-    print("\n Searching for 'Item 7'...")
+    print("\n🔍 Searching for 'Item 7'...")
 
+    # Find all potential 'Item 7' matches
     item7_matches = list(re.finditer(r'Item\s*7[\.\-–]?\s+(Management.*?Operations)?', text, re.IGNORECASE))
-    item7a_or_8_match = re.search(r'Item\s*7A[\.\-–]?|Item\s*8[\.\-–]?', text, re.IGNORECASE)
+
+    # Use page headers to anchor Item 7A and Item 8 more reliably
+    item7a_match = re.search(r'Apple Inc\.\s*\|\s*2024 Form 10-K\s*\|\s*\d+\s*[\r\n]+Item\s*7A[\.\-–]?', text, re.IGNORECASE)
+    item8_match = re.search(r'Apple Inc\.\s*\|\s*2024 Form 10-K\s*\|\s*\d+\s*[\r\n]+Item\s*8[\.\-–]?', text, re.IGNORECASE)
 
     if not item7_matches:
-        print("No 'Item 7' match found.")
+        print("❌ No 'Item 7' match found.")
         return "MD&A section not found"
 
-    print(f"Found {len(item7_matches)} 'Item 7' matches.")
+    #print(f"✅ Found {len(item7_matches)} 'Item 7' matches.")
     for i, m in enumerate(item7_matches):
         print(f"  Match {i+1} at char index: {m.start()}")
 
-    if item7a_or_8_match:
-        print(f"Found 'Item 7A/8' at index: {item7a_or_8_match.start()}")
-    else:
-        print("No 'Item 7A or 8' found; using fallback length.")
-
-    # Use second match if exists, else first
-    
+    # Select best starting point (3rd match usually skips the TOC and summary)
     if len(item7_matches) >= 3:
         start_index = item7_matches[2].start()
-    elif len(item7_matches) >= 1:
-        start_index = item7_matches[-1].start()
     else:
-        return "No 'Item 7' section found."
+        start_index = item7_matches[-1].start()
 
-    end_index = item7a_or_8_match.start() if item7a_or_8_match else start_index + 6000
+    # Choose end index based on presence of 7A or 8
+    if item7a_match:
+        end_index = item7a_match.end()
+        if item8_match and item8_match.start() > end_index:
+            end_index = item8_match.start()
+    elif item8_match:
+        end_index = item8_match.start()
+    else:
+        end_index = start_index + 20000  # Fallback slice
 
     if end_index <= start_index:
-        print("End index before start index. Using fallback slice of 5000 chars.")
+        print("⚠️ End index before start index. Using fallback slice of 5000 chars.")
         return text[start_index:start_index + 5000].strip()
 
     extracted = text[start_index:end_index].strip()
-    print(f"\n Extracted length: {len(extracted)} characters\n")
+    print(f"\n📏 Extracted length: {len(extracted)} characters\n")
     return extracted or "Empty content extracted"
 
+
+
 mdna_text = extract_mdna_from_main_html("https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm")
-print(mdna_text[:3000]) 
+# print(len(mdna_text))
+# print(mdna_text)

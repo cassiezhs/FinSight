@@ -1,9 +1,11 @@
 import os
 import pandas as pd
 from sqlalchemy import create_engine
+import dash
 from dash import Dash, dcc, html, Input, Output
 import plotly.express as px
 from dotenv import load_dotenv
+import dash_bootstrap_components as dbc
 
 # Load DB credentials
 load_dotenv()
@@ -35,12 +37,19 @@ def get_stock_data(engine, ticker, start_date, end_date):
 engine = get_engine()
 tickers = get_available_tickers(engine)
 
-app = Dash(__name__)
+app = dash.Dash(external_stylesheets=[dbc.themes.ZEPHYR])
 app.title = "📈 Stock Price Dashboard"
+
+color_mode_switch =  html.Span(
+    [
+        dbc.Label(className="fa fa-moon", html_for="switch"),
+        dbc.Switch( id="switch", value=True, className="d-inline-block ms-1", persistence=True),
+        dbc.Label(className="fa fa-sun", html_for="switch"),
+    ]
+)
 
 app.layout = html.Div([
     html.H1("Stock Price Viewer"),
-
     html.Label("Select Ticker"),
     dcc.Dropdown(tickers, tickers[0], id='ticker-dropdown'),
 

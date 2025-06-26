@@ -41,6 +41,7 @@ def save_mdna_text(text, cik, company_name, filing_date, engine, chunk_size=3000
     } for idx, chunk in enumerate(chunks)]
 
     df = pd.DataFrame(rows)
+    print(df)
     df.to_sql("mdna_sections", engine, if_exists='append', index=False)
     print(f"✅ Saved {len(df)} chunks for {company_name} ({cik}) on {filing_date}")
 
@@ -62,5 +63,5 @@ if __name__ == "__main__":
     cik = "0000320193"  # or use get_cik(ticker) again if you want to make it dynamic
     company_name = "Apple Inc."
 
-    #save_mdna_text(mdna_text, cik, company_name, "2024-09-28", engine)
+    save_mdna_text(mdna_text, cik, company_name, "2024-09-28", engine)
 
