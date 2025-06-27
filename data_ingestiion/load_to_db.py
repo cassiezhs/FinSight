@@ -50,18 +50,28 @@ if __name__ == "__main__":
     from fetch_stock import fetch_stock_data
     from fetch_sec import extract_mdna_from_main_html  # You should place this function in a file named fetch_10k.py
 
-    ticker = "AAPL"
+    tickers = {
+        #"AAPL": "Apple Inc.",
+        "GOOGL": "Alphabet Inc.",
+        "MSFT": "Microsoft Corp.",
+        "NVDA": "NVIDIA Corp."
+    }
     engine = get_engine()
 
-    # Save stock data
-    stock_df = fetch_stock_data(ticker, "2023-01-01", "2024-01-01")
-    save_stock_data(stock_df, ticker, engine)
+    for ticker, company_name in tickers.items():
+        print(f"\n🚀 Processing {company_name} ({ticker})")
+
+        # Save stock data
+        stock_df = fetch_stock_data(ticker, "2023-01-01", "2024-01-01")
+        if not stock_df.empty:
+            save_stock_data(stock_df, ticker, engine)
+
 
     # Save MD&A text
     mdna_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
-    mdna_text = extract_mdna_from_main_html(mdna_url)
-    cik = "0000320193"  # or use get_cik(ticker) again if you want to make it dynamic
+    #mdna_text = extract_mdna_from_main_html(mdna_url)
+    #cik = "0000320193"  # or use get_cik(ticker) again if you want to make it dynamic
     company_name = "Apple Inc."
 
-    save_mdna_text(mdna_text, cik, company_name, "2024-09-28", engine)
+    #save_mdna_text(mdna_text, cik, company_name, "2024-09-28", engine)
 
