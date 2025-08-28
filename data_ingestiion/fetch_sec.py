@@ -118,5 +118,5 @@ def extract_mdna_from_main_html(html_url):
 
 
 mdna_text = extract_mdna_from_main_html("https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm")
-# print(len(mdna_text))
+print(len(mdna_text))
 # print(mdna_text)
