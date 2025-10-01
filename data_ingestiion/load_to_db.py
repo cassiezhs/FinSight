@@ -16,17 +16,37 @@ def get_engine():
     return create_engine(url)
 
 # Save stock price dataframe
+from sqlalchemy import text
+
 def save_stock_data(df, ticker, engine):
     df = df.copy()
     df['ticker'] = ticker
     df.reset_index(inplace=True)  
-
-    # Optional: Select only necessary columns to match your DB schema
     df = df[['Date', 'Open', 'Close', 'Volume', 'ticker']]
-    df.columns = ['date', 'open', 'close', 'volume', 'ticker']  # Rename for DB schema
+    df.columns = ['date', 'open', 'close', 'volume', 'ticker']
 
+    # Check if data for this ticker already exists in the date range
+    min_date = df['date'].min().date()
+    max_date = df['date'].max().date()
+
+    with engine.connect() as conn:
+        query = text("""
+            SELECT COUNT(*) FROM stock_prices
+            WHERE ticker = :ticker AND date BETWEEN :start_date AND :end_date
+        """)
+        result = conn.execute(query, {
+            "ticker": ticker,
+            "start_date": min_date,
+            "end_date": max_date
+        }).scalar()
+
+    if result and result > 0:
+        print(f"⏭️ Skipping {ticker}: data already exists between {min_date} and {max_date}.")
+        return
+
+    # Otherwise, insert the data
     df.to_sql("stock_prices", engine, if_exists='append', index=False)
-    print(f"✅ Saved {len(df)} rows of stock data for {ticker}")
+    print(f"✅ Saved {len(df)} rows of stock data for {ticker} ({min_date} → {max_date})")
 
 # Save MD&A text
 def save_mdna_text(text, cik, company_name, ticker, filing_date, engine, chunk_size=3000):
@@ -43,7 +63,7 @@ def save_mdna_text(text, cik, company_name, ticker, filing_date, engine, chunk_s
 
     df = pd.DataFrame(rows)
     df.to_sql("mdna_sections", engine, if_exists='append', index=False)
-    print(f"✅ Saved {len(df)} chunks for {company_name} ({cik}) on {filing_date}")
+    #print(f"✅ Saved {len(df)} chunks for {company_name} ({cik}) on {filing_date}")
 
 
 if __name__ == "__main__":
@@ -59,18 +79,18 @@ if __name__ == "__main__":
     engine = get_engine()
     for ticker, company_name in tickers.items():
         # Save stock data
-        stock_df = fetch_stock_data(ticker, "2023-01-01", "2024-01-01")
-        #if not stock_df.empty:
-        #    save_stock_data(stock_df, ticker, engine)
+        stock_df = fetch_stock_data(ticker, "2024-01-01", "2025-09-30")
+        if not stock_df.empty:
+            save_stock_data(stock_df, ticker, engine)
 
 
     # Save MD&A text
     mdna_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm"
     mdna_text = extract_mdna_from_main_html(mdna_url)
-    print(mdna_text)
+    #print(mdna_text)
     cik = "0000320193"  # or use get_cik(ticker) again if you want to make it dynamic
     company_name = "Apple Inc."
     ticker = 'AAPL'
 
-    save_mdna_text(mdna_text, cik, company_name, ticker, "2024-09-28", engine)
+    #save_mdna_text(mdna_text, cik, company_name, ticker, "2024-09-28", engine)
 

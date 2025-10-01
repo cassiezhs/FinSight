@@ -6,7 +6,7 @@ from dash import Dash, dcc, html, Input, Output
 import plotly.express as px
 from dotenv import load_dotenv
 import dash_bootstrap_components as dbc
-from openai import OpenAI
+#from openai import OpenAI
 
 # Load DB credentials
 load_dotenv()
@@ -15,7 +15,7 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 DB_NAME = os.getenv("DB_NAME")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+#client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def get_engine():
     url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -51,33 +51,35 @@ def load_mdna(ticker, engine):
     return df[['filing_date', 'full_content']]
 
 def detect_sentiment(text):
-    prompt = f"""Analyze the sentiment of the following MD&A section and respond with one word only: Positive, Neutral, or Negative.\n\n{text[:3000]}"""
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a financial analyst."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"⚠️ Error: {str(e)}"
+    # prompt = f"""Analyze the sentiment of the following MD&A section and respond with one word only: Positive, Neutral, or Negative.\n\n{text[:3000]}"""
+    # try:
+    #     response = client.chat.completions.create(
+    #         model="gpt-3.5-turbo",
+    #         messages=[
+    #             {"role": "system", "content": "You are a financial analyst."},
+    #             {"role": "user", "content": prompt}
+    #         ],
+    #         temperature=0
+    #     )
+    #     return response.choices[0].message.content.strip()
+    # except Exception as e:
+    #     return f"⚠️ Error: {str(e)}"
+    return "🔒 Sentiment (OpenAI API disabled in test mode cause I'm poor)"
 
 def summarize_mdna(text):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a financial analyst. Summarize the following MD&A in 3-4 bullet points."},
-                {"role": "user", "content": text[:3000]}
-            ],
-            temperature=0.4
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"⚠️ Error generating summary: {str(e)}"
+    # try:
+    #     response = client.chat.completions.create(
+    #         model="gpt-3.5-turbo",
+    #         messages=[
+    #             {"role": "system", "content": "You are a financial analyst. Summarize the following MD&A in 3-4 bullet points."},
+    #             {"role": "user", "content": text[:3000]}
+    #         ],
+    #         temperature=0.4
+    #     )
+    #     return response.choices[0].message.content
+    # except Exception as e:
+    #     return f"⚠️ Error generating summary: {str(e)}"
+    return "🔒 Summary (OpenAI API disabled in test mode cause I'm poor)"
 
 # Initialize
 engine = get_engine()

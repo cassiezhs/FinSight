@@ -19,9 +19,9 @@ def fetch_stock_data(ticker_symbol, start_date, end_date):
         return pd.DataFrame()
 
 if __name__ == "__main__":
-    tickers = ["GOOGL", "MSFT", "NVDA"]
-    start_date = "2023-01-01"
-    end_date = "2024-01-01"
+    tickers = ["GOOGL", "MSFT", "NVDA","AAPL"]
+    start_date = "2024-01-01"
+    end_date = "2025-09-30"
 
     all_data = []
 
