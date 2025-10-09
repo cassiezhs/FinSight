@@ -16,7 +16,6 @@ def get_cik(ticker):
             return cik
     return None
 
-print(get_cik("AAPL"))  
 
 def get_latest_10k_url(cik):
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
@@ -33,7 +32,7 @@ def get_latest_10k_url(cik):
     return None
 
 
-cik = get_cik("AAPL")
+cik = get_cik("NVDA")
 print(get_latest_10k_url(cik))
 
 def get_10k_html_url(doc_index_url):
@@ -135,13 +134,72 @@ def get_10k_url_for_year(cik, year):
             return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_no}/index.json"
     return None
 
+def get_10k_html_url(doc_index_url):
+    headers = {"User-Agent": "zihanshao1996@gmail.com"}
+    resp = requests.get(doc_index_url, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        print("Failed to fetch index:", doc_index_url)
+        return None
+
+    data = resp.json()
+    files = data.get('directory', {}).get('item', [])
+    if not files:
+        print("No files in index.json.")
+        return None
+
+    # Build normalized list
+    items = []
+    for f in files:
+        name = f.get('name', '')
+        lname = name.lower()
+        try:
+            size = int(f.get('size', 0))
+        except Exception:
+            size = 0
+        items.append({'name': name, 'lname': lname, 'size': size})
+
+    # 1) Strong preference: slug like nvda-YYYYMMDD.htm (or aapl-..., msft-..., etc.)
+    import re
+    slug = [it for it in items
+            if it['lname'].endswith('.htm')
+            and not it['lname'].endswith('_htm.xml')
+            and re.search(r'-20\d{6}\.htm$', it['lname'])]
+    if slug:
+        best = sorted(slug, key=lambda it: it['size'], reverse=True)[0]
+        html_url = doc_index_url.replace('index.json', best['name'])
+        print("Primary slug HTML:", html_url)
+        return html_url
+
+    # 2) Heuristic: large .htm that isn't obviously an exhibit/policy/consent/subsidiary or R#.htm
+    EXCLUDE = ('exhibit', 'consent', 'policy', 'subsidiar', 'description', 'plan')
+    cand = [it for it in items
+            if it['lname'].endswith('.htm')
+            and not it['lname'].endswith('_htm.xml')
+            and not any(x in it['lname'] for x in EXCLUDE)
+            and not re.fullmatch(r'r\d+\.htm', it['lname'])]
+    if cand:
+        best = sorted(cand, key=lambda it: it['size'], reverse=True)[0]
+        html_url = doc_index_url.replace('index.json', best['name'])
+        print("Primary (heuristic) HTML:", html_url)
+        return html_url
+
+    # 3) Last resort: first .htm (non-xml)
+    for it in items:
+        if it['lname'].endswith('.htm') and not it['lname'].endswith('_htm.xml'):
+            html_url = doc_index_url.replace('index.json', it['name'])
+            print("Fallback HTML:", html_url)
+            return html_url
+
+    print("No HTML file found.")
+    return None
+
 # ---------------- Test: Pull 2023 and 2025 AAPL Filings ---------------- #
 
 if __name__ == "__main__":
-    aapl_cik = get_cik("AAPL")
-    for year in [2023,2025]:
-        print(f"\n=== Fetching AAPL {year} 10-K ===")
-        idx_url = get_10k_url_for_year(aapl_cik, year)
+    nvda_cik = get_cik("NVDA")
+    for year in [2023,2024,2025]:
+        print(f"\n=== Fetching NVDA {year} 10-K ===")
+        idx_url = get_10k_url_for_year(nvda_cik, year)
         if idx_url:
             html_url = get_10k_html_url(idx_url)
             print(html_url)

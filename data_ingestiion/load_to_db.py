@@ -108,8 +108,8 @@ if __name__ == "__main__":
             save_stock_data(stock_df, ticker, engine)
 
     # ---- 2️⃣ Save Apple MD&A (2023–2025) ----
-    ticker = "AAPL"
-    company_name = "Apple Inc."
+    ticker = "GOOGL"
+    company_name = "Alphabet Inc."
     cik = get_cik(ticker)
 
     for year in [2023, 2024, 2025]:
