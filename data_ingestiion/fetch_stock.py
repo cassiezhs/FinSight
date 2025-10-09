@@ -7,7 +7,7 @@ def fetch_stock_data(ticker_symbol, start_date, end_date):
         df = ticker.history(start=start_date, end=end_date)
 
         if df.empty:
-            print(f"⚠️ No stock data found for {ticker_symbol} between {start_date} and {end_date}.")
+            print(f"No stock data found for {ticker_symbol} between {start_date} and {end_date}.")
             return pd.DataFrame()
 
         df = df[['Open', 'Close', 'Volume']].reset_index()
@@ -15,7 +15,7 @@ def fetch_stock_data(ticker_symbol, start_date, end_date):
         return df
 
     except Exception as e:
-        print(f"❌ Failed to fetch stock data for {ticker_symbol}: {e}")
+        print(f"Failed to fetch stock data for {ticker_symbol}: {e}")
         return pd.DataFrame()
 
 if __name__ == "__main__":

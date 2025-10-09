@@ -116,7 +116,43 @@ def extract_mdna_from_main_html(html_url):
     return extracted or "Empty content extracted"
 
 
+def get_10k_url_for_year(cik, year):
+    """
+    Return the index.json URL for the company's 10-K filed in a given year.
+    """
+    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    headers = {"User-Agent": "zihanshao19960@gmail.com"}
+    resp = requests.get(url, headers=headers)
+    data = resp.json()
 
-mdna_text = extract_mdna_from_main_html("https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm")
-print(len(mdna_text))
+    forms = data['filings']['recent']['form']
+    dates = data['filings']['recent']['filingDate']
+    accs  = [a.replace("-", "") for a in data['filings']['recent']['accessionNumber']]
+
+    for i, f in enumerate(forms):
+        if f == '10-K' and dates[i].startswith(str(year)):
+            acc_no = accs[i]
+            return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_no}/index.json"
+    return None
+
+# ---------------- Test: Pull 2023 and 2025 AAPL Filings ---------------- #
+
+if __name__ == "__main__":
+    aapl_cik = get_cik("AAPL")
+    for year in [2023,2025]:
+        print(f"\n=== Fetching AAPL {year} 10-K ===")
+        idx_url = get_10k_url_for_year(aapl_cik, year)
+        if idx_url:
+            html_url = get_10k_html_url(idx_url)
+            print(html_url)
+            if html_url:
+                mdna_text = extract_mdna_from_main_html(html_url)
+                print(mdna_text)
+                print(f"✅ Extracted {len(mdna_text)} chars for {year}")
+            else:
+                print(f"⚠️ No HTML found for {year}")
+        else:
+            print(f"⚠️ No 10-K found for {year}")
+# mdna_text = extract_mdna_from_main_html("https://www.sec.gov/Archives/edgar/data/320193/000032019324000123/aapl-20240928.htm")
+# print(len(mdna_text))
 # print(mdna_text)
