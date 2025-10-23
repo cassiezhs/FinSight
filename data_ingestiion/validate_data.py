@@ -307,3 +307,45 @@ with open(f"{OUTDIR}/phase2_report_summary.md","w",encoding="utf-8") as f:
     if not q_filings.empty: f.write(q_filings.head(20).to_markdown(index=False)+"\n\n")
     f.write(q_prices.to_markdown(index=False)+"\n")
 print(f"Done. Artifacts saved to: {OUTDIR}/")
+
+
+
+import pandas as pd
+
+# --- Step 1: Load datasets ---
+# Example: Load daily price data and 10-K metadata
+prices = pd.read_csv("stock_prices.csv", parse_dates=["date"])
+filings = pd.read_csv("10k_filings.csv", parse_dates=["filing_date"])
+
+# Ensure ticker case consistency
+prices['ticker'] = prices['ticker'].str.upper()
+filings['ticker'] = filings['ticker'].str.upper()
+
+# --- Step 2: Map filing date to next available trading day (on/after logic) ---
+# For each filing, find the first trading day on/after the filing date
+def map_to_first_trading_day(filing_row, trading_dates_df):
+    ticker = filing_row['ticker']
+    filing_date = filing_row['filing_date']
+    trading_dates = trading_dates_df[trading_dates_df['ticker'] == ticker]
+    valid_dates = trading_dates[trading_dates['date'] >= filing_date]
+    if not valid_dates.empty:
+        return valid_dates['date'].min()
+    else:
+        return pd.NaT  # No valid trading date found
+
+# Apply mapping
+filings['event_date'] = filings.apply(
+    lambda row: map_to_first_trading_day(row, prices), axis=1
+)
+
+# --- Step 3: Merge data ---
+# Merge to bring in prices (optional: bring in pre/post event windows too)
+merged_df = pd.merge(filings, prices, left_on=['ticker', 'event_date'], right_on=['ticker', 'date'], how='left')
+
+# Optional: Drop redundant columns or rename
+merged_df = merged_df.drop(columns=['date'])
+merged_df = merged_df.rename(columns={'close': 'close_on_event_day'})
+
+# --- Step 4: Output or store ---
+merged_df.to_csv("merged_10k_price_dataset.csv", index=False)
+
