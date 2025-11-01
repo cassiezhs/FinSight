@@ -99,7 +99,7 @@ class SentimentEngine:
             self.pipe = pipeline("text-classification", model=mdl, tokenizer=tok,
                                  truncation=True, return_all_scores=True)
             self.backend = "finbert"
-            print("✅ Loaded FinBERT.")
+            print("Loaded FinBERT.")
         except Exception as e:
             print(f"⚠️ FinBERT unavailable ({e}). Trying VADER fallback...")
 
@@ -370,7 +370,7 @@ def main():
     benchmark = benchmark.sort_values("date").copy()
     benchmark["mkt_ret_fwd_w"] = np.log(benchmark["close"].shift(-cfg.event_window) / benchmark["close"])
 
-    print("🔗 Merging filings to prices by ENTITY...")
+    print(" Merging filings to prices by ENTITY...")
     merged_list = []
     for ent, f_df in filing_sent.groupby("entity"):
         p_df = prices[prices["entity"] == ent].sort_values("date").copy()
