@@ -1,38 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Phase 4.0 — Modeling (DB version)
-- Reads mdna_sections / stock_prices / sp500_index from PostgreSQL
-- Builds company_ref (CIK↔ticker↔name) automatically from SEC
-- Sentiment: FinBERT (preferred) → VADER fallback
-- Features: filing-level polarity, pre-vol, 30D forward log returns (prices + benchmark)
-- Models: OLS (HC3), QuantReg (0.25/0.5/0.75), Robust Group CV by entity (boolean masks)
-- Anomalies: |z(resid)| > z_thresh OR sign(polarity) ≠ sign(return)
-- Outputs: model_results (DB), model_results_summary.json, model_scatter.html
-
-Env vars (.env or shell):
-  DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME, DB_SCHEMA(optional)
+Phase 4.0 — Modeling (Full Coverage Version)
+- Keeps all tickers (no paragraph or uncertainty pruning)
+- Prints model summary (no DB write)
+- Outputs HTML scatter plot
 """
 
-import os
-import json
+import os, re, numpy as np, pandas as pd, requests
 from dataclasses import dataclass
-from typing import Tuple, List
-
-import numpy as np
-import pandas as pd
-import requests
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
-
-# Stats / ML
+from sqlalchemy import create_engine, text
 import statsmodels.api as sm
 from sklearn.metrics import r2_score
-
-# Visualization
+from sklearn.model_selection import LeaveOneGroupOut
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import Pipeline
+from scipy.stats import spearmanr
 import plotly.express as px
 
 # ======================= Config =======================
+pd.options.mode.copy_on_write = True
 load_dotenv()
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -45,492 +34,309 @@ DB_SCHEMA = os.getenv("DB_SCHEMA", "public")
 class CFG:
     event_window: int = 30
     tokenizer_max_len: int = 512
-    cv_folds: int = 5
     z_thresh: float = 2.0
-    min_paragraphs: int = 5
-    uncertainty_cutoff: float = 0.35
     out_html: str = "model_scatter.html"
-    random_state: int = 42
 
 cfg = CFG()
 
+# ================= DB Engine =================
 def get_engine():
     if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
-        raise RuntimeError("Missing DB env vars. Set DB_USER, DB_PASSWORD, DB_HOST, DB_NAME.")
-    try:
-        int(DB_PORT)
-    except Exception as e:
-        raise RuntimeError(f"DB_PORT must be an integer (got {DB_PORT!r})") from e
+        raise RuntimeError("Missing DB env vars.")
     url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     return create_engine(url, pool_pre_ping=True)
 
-# ================= Company mapping (CIK↔Ticker) =================
+# ================= Company Ref =================
 def ensure_company_ref_table(engine):
     try:
-        _ = pd.read_sql(f"SELECT 1 FROM {DB_SCHEMA}.company_ref LIMIT 1;", engine)
+        with engine.connect() as conn:
+            conn.execute(text(f'SELECT 1 FROM "{DB_SCHEMA}"."company_ref" LIMIT 1;'))
         print("🔎 company_ref exists — refreshing with latest SEC list...")
     except Exception:
         print("ℹ️ company_ref not found — creating...")
-
-    url = "https://www.sec.gov/files/company_tickers.json"
-    resp = requests.get(url, headers={"User-Agent": "zihanshao1996@gmail.com"}, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    df = pd.DataFrame.from_dict(data, orient="index")
-    df = df.rename(columns={"cik_str": "cik", "title": "company_name"})
+    data = requests.get(
+        "https://www.sec.gov/files/company_tickers.json",
+        headers={"User-Agent": "zihanshao1996@gmail.com"}, timeout=60
+    ).json()
+    df = pd.DataFrame.from_dict(data, orient="index")\
+        .rename(columns={"cik_str": "cik", "title": "company_name"})
     df["cik"] = df["cik"].astype(int).astype(str).str.zfill(10)
     df["ticker"] = df["ticker"].astype(str).str.upper()
     df = df[["cik", "ticker", "company_name"]]
     df.to_sql("company_ref", engine, schema=DB_SCHEMA, if_exists="replace", index=False)
     print(f"✅ company_ref refreshed with {len(df)} rows.")
 
-# ================= Sentiment (FinBERT → VADER) =================
-class SentimentEngine:
-    def __init__(self, cfg: CFG):
-        self.cfg = cfg
-        self.backend = None
-        self.pipe = None
-        self.vader = None
+# ================= Helpers =================
+ALIASES = {"BRK.B": "BRK-B", "BF.B": "BF-B"}
+def to_canonical_ticker(s):
+    if not s: return None
+    t = str(s).strip().upper().replace(".", "-")
+    return ALIASES.get(re.sub("-{2,}", "-", t), re.sub("-{2,}", "-", t))
 
-        try:
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
-            tok = AutoTokenizer.from_pretrained("ProsusAI/finbert")
-            mdl = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert")
-            self.pipe = pipeline("text-classification", model=mdl, tokenizer=tok,
-                                 truncation=True, return_all_scores=True)
-            self.backend = "finbert"
-            print("Loaded FinBERT.")
-        except Exception as e:
-            print(f"⚠️ FinBERT unavailable ({e}). Trying VADER fallback...")
+def to_naive(s): return pd.to_datetime(s, utc=True, errors="coerce").dt.tz_convert(None)
 
-        if self.backend is None:
-            try:
-                import nltk
-                from nltk.sentiment import SentimentIntensityAnalyzer
-                try:
-                    nltk.data.find("sentiment/vader_lexicon.zip")
-                except LookupError:
-                    nltk.download("vader_lexicon")
-                self.vader = SentimentIntensityAnalyzer()
-                self.backend = "vader"
-                print("✅ Using VADER sentiment fallback.")
-            except Exception as e:
-                raise RuntimeError("No sentiment backend available. Install transformers+torch or nltk.") from e
+def ensure_single_entity_col(df):
+    df = df.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    candidates = [c for c in df.columns if c.startswith("entity")]
+    base = None
+    for c in candidates:
+        col = df[c]
+        if isinstance(col, pd.DataFrame): col = col.iloc[:, 0]
+        base = col if base is None else base.combine_first(col)
+    df["entity"] = base.astype(str)
+    for c in candidates:
+        if c != "entity": df.drop(columns=c, inplace=True, errors="ignore")
+    return df
 
-    def score_paragraph(self, text: str) -> Tuple[float, float, float, float]:
-        t = (text or "")[: self.cfg.tokenizer_max_len]
-        if self.backend == "finbert":
-            res = self.pipe(t)[0]
-            scores = {d["label"].lower(): float(d["score"]) for d in res}
-            p_pos, p_neu, p_neg = scores.get("positive", 0.0), scores.get("neutral", 0.0), scores.get("negative", 0.0)
-            uncertainty = 1.0 - max(p_pos, p_neu, p_neg)
-            return p_pos, p_neu, p_neg, uncertainty
-        else:
-            s = self.vader.polarity_scores(t)
-            comp = s["compound"]
-            p_pos = max(0.0, comp) / 2.0 + 0.25 if comp > 0 else 0.25
-            p_neg = max(0.0, -comp) / 2.0 + 0.25 if comp < 0 else 0.25
-            p_neu = 1.0 - min(0.98, p_pos + p_neg)
-            uncertainty = 1.0 - max(p_pos, p_neu, p_neg)
-            return float(p_pos), float(p_neu), float(p_neg), float(uncertainty)
-
-    def score_dataframe(self, df: pd.DataFrame, text_col: str = "text") -> pd.DataFrame:
-        ps, ns, zs, us = [], [], [], []
-        for _, row in df.iterrows():
-            p_pos, p_neu, p_neg, unc = self.score_paragraph(str(row[text_col]))
-            ps.append(p_pos); ns.append(p_neu); zs.append(p_neg); us.append(unc)
-        out = df.copy()
-        out["p_pos"], out["p_neu"], out["p_neg"], out["uncertainty"] = ps, ns, zs, us
-        return out
-
-# ================= Feature engineering =================
-def to_naive(s: pd.Series) -> pd.Series:
-    return pd.to_datetime(s, utc=True, errors="coerce").dt.tz_convert(None)
-
-def compute_price_features(prices: pd.DataFrame, event_window: int) -> pd.DataFrame:
-    p = prices.copy()
-    p = p[p["entity"].notna() & p["date"].notna()].copy()
-    p = p.drop_duplicates(subset=["entity", "date"]).sort_values(["entity", "date"])
-    p["close"] = pd.to_numeric(p["close"], errors="coerce")
-
+def compute_price_features(prices, event_window):
+    p = prices.dropna(subset=["entity","date"]).drop_duplicates(["entity","date"])\
+        .sort_values(["entity","date"]).copy()
+    for c in ("open","close","volume"):
+        if c in p: p[c] = pd.to_numeric(p[c], errors="coerce")
     p["log_close"] = np.log(p["close"])
-    p["ret_d"] = p.groupby("entity", group_keys=False)["log_close"].diff()
-
-    p["vol_pre30"] = (
-        p.groupby("entity", group_keys=False)["ret_d"]
-         .rolling(window=30, min_periods=10)
-         .std()
-         .reset_index(level=0, drop=True)
-    )
-
-    p["ret_fwd_w"] = (
-        p.groupby("entity", group_keys=False)["log_close"].shift(-event_window) - p["log_close"]
-    )
+    p["ret_d"] = p.groupby("entity")["log_close"].diff()
+    p["vol_pre30"] = p.groupby("entity")["ret_d"].rolling(30,min_periods=10).std().reset_index(level=0,drop=True)
+    p["ret_fwd_w"] = p.groupby("entity")["log_close"].shift(-event_window)-p["log_close"]
     p.drop(columns=["log_close"], inplace=True)
     return p
 
-def aggregate_to_filing(paras: pd.DataFrame, backend: str, uncertainty_cutoff: float) -> pd.DataFrame:
-    d = paras.copy()
-    if backend == "finbert":
-        d = d[d["uncertainty"] <= uncertainty_cutoff]
-    g = d.groupby(["entity", "filing_date"])
-    out = g.agg(
-        pos_mean=("p_pos", "mean"),
-        neg_mean=("p_neg", "mean"),
-        neu_mean=("p_neu", "mean"),
-        para_count=("paragraph_id", "count"),
-        uncertainty_mean=("uncertainty", "mean"),
-        cik=("cik", "first"),
-        ticker=("ticker", "first"),
-        company_name=("company_name", "first"),
-    ).reset_index()
-    out["polarity"] = out["pos_mean"] - out["neg_mean"]
-    return out
+def merge_asof_safe(filing_sent, prices):
+    left = filing_sent.rename(columns={"filing_date":"f_date"}).dropna(subset=["entity","f_date"]).copy()
+    left["f_date"] = pd.to_datetime(left["f_date"], errors="coerce")
+    left = left.dropna(subset=["f_date"]).sort_values(["entity","f_date"])
+    right = prices.dropna(subset=["entity","date"]).copy()
+    right["date"] = pd.to_datetime(right["date"], errors="coerce")
+    right = right.sort_values(["entity","date"])
+    try:
+        merged = pd.merge_asof(left,right,left_on="f_date",right_on="date",by="entity",
+                               direction="nearest",allow_exact_matches=True)
+    except ValueError as e:
+        print(f"⚠️ merge_asof failed ({e}) — trying fallback...")
+        chunks=[]
+        for ent,lf in left.groupby("entity"):
+            rf=right[right["entity"]==ent]
+            if rf.empty: continue
+            idx=np.searchsorted(rf["date"],lf["f_date"],side="left")
+            idx=np.clip(idx,0,len(rf)-1)
+            chunks.append(pd.concat([lf.reset_index(drop=True),rf.iloc[idx].reset_index(drop=True)],axis=1))
+        merged=pd.concat(chunks,ignore_index=True) if chunks else pd.DataFrame()
+    return merged
 
-# --------- robust group K-fold that returns boolean masks ----------
-def group_kfold_masks(groups: np.ndarray, n_splits: int, random_state: int = 42) -> List[Tuple[np.ndarray, np.ndarray]]:
-    groups = np.asarray(groups).reshape(-1)  # 1-D
-    N = len(groups)
-    valid = ~pd.isna(groups)
-    uniq = np.unique(groups[valid])
+# ================= Sentiment =================
+class SentimentEngine:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 
-    if uniq.size < 2 or n_splits < 2:
-        return []
+        tok = AutoTokenizer.from_pretrained("ProsusAI/finbert")
 
-    n_splits = min(n_splits, uniq.size)
-    rng = np.random.RandomState(random_state)
-    order = np.arange(uniq.size)
-    rng.shuffle(order)
-    uniq_shuf = uniq[order]
+        try:
+            # 🔒 Prefer safetensors to bypass torch>=2.6 restriction
+            mdl = AutoModelForSequenceClassification.from_pretrained(
+                "ProsusAI/finbert",
+                use_safetensors=True
+            )
+            print("✅ FinBERT loaded with safetensors.")
+        except Exception as e:
+            print(f"⚠️ safetensors load failed, trying fallback: {e}")
+            mdl = AutoModelForSequenceClassification.from_pretrained(
+                "ProsusAI/finbert",
+                trust_remote_code=True
+            )
 
-    buckets = [[] for _ in range(n_splits)]
-    for i, g in enumerate(uniq_shuf):
-        buckets[i % n_splits].append(g)
+        self.pipe = pipeline(
+            "text-classification",
+            model=mdl,
+            tokenizer=tok,
+            truncation=True,
+            top_k=None
+        )
+        self.backend = "finbert"
+        print("Loaded FinBERT.")
 
-    masks = []
-    for i in range(n_splits):
-        test_groups = set(buckets[i])
-        if not test_groups:
-            continue
-        test_mask = np.isin(groups, list(test_groups))
-        train_mask = ~test_mask
-        if test_mask.sum() == 0 or train_mask.sum() == 0:
-            continue
-        if test_mask.shape[0] != N or train_mask.shape[0] != N:
-            continue
-        masks.append((train_mask, test_mask))
-    return masks
+    def _extract_scores(self, res):
+        """Extract p_pos, p_neu, p_neg from FinBERT output"""
+        items = res[0] if isinstance(res, list) and res and isinstance(res[0], list) else res
+        scores = {d["label"].lower(): float(d["score"]) for d in items if isinstance(d, dict)}
+        return scores.get("positive", 0), scores.get("neutral", 0), scores.get("negative", 0)
 
-# --------- coalesce duplicate-named columns to a single Series ----------
-def pick_series(df: pd.DataFrame, col: str) -> pd.Series:
-    """
-    Coalesce possibly-duplicated columns named `col` into a single Series.
-    If multiple, take first non-null across them; if none, return empty Series with that name.
-    """
-    block = df.loc[:, df.columns == col]
-    if block.shape[1] == 0:
-        return pd.Series(index=df.index, dtype=object, name=col)
-    if block.shape[1] == 1:
-        s = block.iloc[:, 0]
-        s.name = col
-        return s
-    s = block.ffill(axis=1).bfill(axis=1).iloc[:, 0]
-    s.name = col
-    return s
+    def score_paragraph(self, text: str):
+        """Score a single paragraph."""
+        res = self.pipe(text[: self.cfg.tokenizer_max_len])
+        p_pos, p_neu, p_neg = self._extract_scores(res)
+        uncertainty = 1.0 - max(p_pos, p_neu, p_neg)
+        return p_pos, p_neu, p_neg, uncertainty
 
-# --------- coalesce duplicate-named columns in a DataFrame ----------
-def coalesce_dup_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-    """
-    For each name in `cols`, if duplicates exist, take first non-null across duplicates
-    and drop extras. Finally drop any other lingering duplicate column names.
-    """
-    out = df.copy()
-    for c in cols:
-        same = out.loc[:, out.columns == c]
-        if same.shape[1] > 1:
-            out[c] = same.ffill(axis=1).bfill(axis=1).iloc[:, 0]
-            # keep first occurrence of c, drop the rest
-            first_idx = np.where(out.columns == c)[0][0]
-            keep_mask = ~((out.columns == c) & (np.arange(len(out.columns)) > first_idx))
-            out = out.loc[:, keep_mask]
-    out = out.loc[:, ~out.columns.duplicated(keep="first")]
-    return out
+    def score_dataframe(self, df: pd.DataFrame, text_col: str = "text") -> pd.DataFrame:
+        """Apply FinBERT to a whole DataFrame."""
+        results = [self.score_paragraph(str(x)) for x in df[text_col]]
+        out = df.copy()
+        out[["p_pos", "p_neu", "p_neg", "uncertainty"]] = pd.DataFrame(results, index=df.index)
+        return out
 
-# ========================= Main =========================
+
+
+# ================= Main =================
 def main():
     engine = get_engine()
     ensure_company_ref_table(engine)
 
     print("✅ Loading data with mapping...")
-    filings = pd.read_sql(
-        f"""
-        SELECT
-          m.cik,
-          m.company_name,
-          cr.ticker,
-          (m.filing_date AT TIME ZONE 'UTC') AS filing_date,
-          m.chunk_index AS paragraph_id,
-          m.content AS text
-        FROM {DB_SCHEMA}.mdna_sections m
-        LEFT JOIN {DB_SCHEMA}.company_ref cr
-          ON ltrim(m.cik,'0') = ltrim(cr.cik,'0');
-        """,
-        engine,
-    )
+    filings = pd.read_sql(f"""
+        SELECT DISTINCT ON (m.cik, UPPER(m.ticker), m.filing_date, m.chunk_index)
+            COALESCE(NULLIF(ltrim(m.cik,'0'),''), cr.cik) AS cik,
+            COALESCE(UPPER(m.ticker), cr.ticker)         AS ticker,
+            COALESCE(m.company_name, cr.company_name)    AS company_name,
+            (m.filing_date AT TIME ZONE 'UTC')           AS filing_date,
+            m.chunk_index AS paragraph_id,
+            m.content AS text
+        FROM "{DB_SCHEMA}"."mdna_sections" m
+        LEFT JOIN "{DB_SCHEMA}"."company_ref" cr 
+          ON ltrim(m.cik,'0') = ltrim(cr.cik,'0')
+          OR UPPER(m.ticker) = cr.ticker;
+    """, engine)
+    print("Distinct tickers from SQL:", filings["ticker"].nunique())
 
-    prices = pd.read_sql(
-        f"""
-        SELECT
-          (sp."Date" AT TIME ZONE 'UTC') AS date,
-          sp."Open"  AS open,
-          sp."Close" AS close,
-          sp."Volume" AS volume,
-          UPPER(sp.ticker) AS ticker,
-          cr.cik
-        FROM {DB_SCHEMA}.stock_prices sp
-        LEFT JOIN {DB_SCHEMA}.company_ref cr
-          ON UPPER(sp.ticker) = UPPER(cr.ticker);
-        """,
-        engine,
-    )
+    prices = pd.read_sql(f"""
+        SELECT (sp."Date" AT TIME ZONE 'UTC') AS date,
+               sp."Open" AS open, sp."Close" AS close, sp."Volume" AS volume,
+               UPPER(sp.ticker) AS ticker, cr.cik
+        FROM "{DB_SCHEMA}"."stock_prices" sp
+        LEFT JOIN "{DB_SCHEMA}"."company_ref" cr ON UPPER(sp.ticker)=cr.ticker;
+    """, engine)
+    benchmark = pd.read_sql(f"""
+        SELECT ("Date" AT TIME ZONE 'UTC') AS date, close
+        FROM "{DB_SCHEMA}"."sp500_index" ORDER BY "Date";
+    """, engine)
 
-    benchmark = pd.read_sql(
-        f"""SELECT ("Date" AT TIME ZONE 'UTC') AS date, close
-            FROM {DB_SCHEMA}.sp500_index
-            ORDER BY "Date";""",
-        engine,
-    )
+    filings["filing_date"]=to_naive(filings["filing_date"])
+    prices["date"]=to_naive(prices["date"])
+    benchmark["date"]=to_naive(benchmark["date"])
 
-    filings["filing_date"] = to_naive(filings["filing_date"])
-    prices["date"]         = to_naive(prices["date"])
-    benchmark["date"]      = to_naive(benchmark["date"])
+    filings["ticker"]=filings["ticker"].map(to_canonical_ticker)
+    prices["ticker"]=prices["ticker"].map(to_canonical_ticker)
+    filings["cik"]=filings["cik"].astype(str).str.strip().str.lstrip("0").replace({"":np.nan})
+    prices["cik"]=prices["cik"].astype(str).str.strip().str.lstrip("0").replace({"":np.nan})
+    filings["entity"]=np.where(filings["cik"].notna(),filings["cik"],filings["ticker"])
+    prices["entity"]=np.where(prices["cik"].notna(),prices["cik"],prices["ticker"])
 
-    filings["cik"]    = filings["cik"].astype(str).str.lstrip("0")
-    filings["ticker"] = filings["ticker"].astype(str).str.upper().replace({"NAN": np.nan, "NA": np.nan, "": np.nan})
-
-    prices.columns     = [c.lower() for c in prices.columns]
-    prices["cik"]      = prices["cik"].astype(str).str.lstrip("0")
-    prices["ticker"]   = prices["ticker"].astype(str).str.upper()
-
-    ciks_in_prices = set(prices["cik"].dropna().unique())
-    tix_in_prices  = set(prices["ticker"].dropna().unique())
-    before = len(filings)
-    filings = filings[filings["cik"].isin(ciks_in_prices) | filings["ticker"].isin(tix_in_prices)].copy()
-    after = len(filings)
-    print(f"ℹ️ Filtered filings to those with price coverage: {before} -> {after}")
-    if after == 0:
-        raise RuntimeError("No overlapping firms between mdna_sections and stock_prices.")
-
-    filings["entity"] = filings["ticker"]
-    filings.loc[filings["entity"].isna(), "entity"] = filings["cik"]
-
+    # Sentiment
     print("⚙️ Running sentiment...")
-    se = SentimentEngine(cfg)
-    filings = se.score_dataframe(filings, text_col="text")
-    filings["polarity"] = filings["p_pos"] - filings["p_neg"]
+    se=SentimentEngine(cfg)
+    filings=se.score_dataframe(filings,"text")
+    filings["polarity"]=filings["p_pos"]-filings["p_neg"]
 
-    filing_sent = aggregate_to_filing(filings, se.backend, cfg.uncertainty_cutoff)
+    # Aggregation — keep all tickers
+    def aggregate_to_filing(df):
+        g = df.groupby(["entity","ticker","company_name","filing_date"], dropna=False)
+        out = g.agg(
+            pos_mean=("p_pos","mean"),
+            neg_mean=("p_neg","mean"),
+            para_count=("paragraph_id","count"),
+            unc_median=("uncertainty","median")
+        ).reset_index()
+        out["polarity"]=out["pos_mean"]-out["neg_mean"]
+        return out[out["para_count"]>=1]  # keep all filings
 
-    keep = filing_sent["para_count"] >= cfg.min_paragraphs
-    if not keep.any():
-        print(f"⚠️ No filings met paragraph threshold ({cfg.min_paragraphs}). "
-              f"Relaxing to >=2 and skipping uncertainty filter.")
-        filing_sent = aggregate_to_filing(filings.assign(uncertainty=0.0), se.backend, 1.0)
-        filing_sent = filing_sent[filing_sent["para_count"] >= 2]
-    else:
-        filing_sent = filing_sent[keep].copy()
+    filing_sent=aggregate_to_filing(filings)
+    print("After aggregation — entities:",filing_sent["entity"].nunique(),
+          "| tickers:",filing_sent["ticker"].nunique(),"| rows:",len(filing_sent))
 
-    if filing_sent.empty:
-        raise RuntimeError("Filings empty after aggregation — increase coverage or lower min_paragraphs.")
+    print("🧪 Pre-merge diagnostics:")
+    print("  filing_sent shape:",filing_sent.shape)
+    print("  prices shape    :",prices.shape)
+    print("  filings entities:",filing_sent["entity"].nunique())
+    print("  prices  entities:",prices["entity"].nunique())
 
-    price_ciks = set(prices["cik"].dropna().astype(str).str.lstrip("0").unique())
-    price_tix  = set(prices["ticker"].dropna().astype(str).str.upper().unique())
+    prices=compute_price_features(prices,cfg.event_window)
+    benchmark=benchmark.sort_values("date").assign(
+        close=lambda x: pd.to_numeric(x["close"], errors="coerce"),
+        mkt_ret_fwd_w=lambda x: np.log(x["close"].shift(-cfg.event_window)/x["close"])
+    ).dropna(subset=["close"])
 
-    filing_sent["cik"]    = filing_sent["cik"].astype(str).str.lstrip("0")
-    filing_sent["ticker"] = filing_sent["ticker"].astype(str).str.upper()
+    merged=merge_asof_safe(filing_sent,prices)
+    merged=pd.merge_asof(
+        merged.sort_values("f_date").reset_index(drop=True),
+        benchmark[["date","mkt_ret_fwd_w"]].sort_values("date"),
+        left_on="f_date", right_on="date", direction="nearest",
+        allow_exact_matches=True
+    ).rename(columns={"f_date":"filing_date"})
+    merged=ensure_single_entity_col(merged)
 
-    filing_sent["entity"] = np.where(
-        filing_sent["cik"].isin(price_ciks),
-        filing_sent["cik"],
-        np.where(filing_sent["ticker"].isin(price_tix), filing_sent["ticker"], np.nan)
-    )
+    # Modeling
+    for c in ("ret_fwd_w","vol_pre30","polarity","mkt_ret_fwd_w"):
+        if c in merged: merged[c]=pd.to_numeric(merged[c], errors="coerce")
+    core_ok=merged[["ret_fwd_w","vol_pre30","polarity"]].notna().all(axis=1)
+    merged_model=ensure_single_entity_col(merged.loc[core_ok].copy())
 
-    before_fs = len(filing_sent)
-    filing_sent = filing_sent[filing_sent["entity"].notna()].copy()
-    after_fs = len(filing_sent)
-    print(f"ℹ️ Filings aligned to price keys: {before_fs} -> {after_fs}")
-    if after_fs == 0:
-        raise RuntimeError("No overlap between filings and prices by CIK/ticker.")
+    entity_series = merged_model["entity"]
+    if isinstance(entity_series, pd.DataFrame):
+        entity_series = entity_series.iloc[:, 0]
 
-    prices["entity"] = prices["cik"]
-    mask_missing_cik = prices["entity"].isna() | (prices["entity"] == "")
-    prices.loc[mask_missing_cik, "entity"] = prices.loc[mask_missing_cik, "ticker"]
+    n_entities = int(float(pd.Series(entity_series.astype(str)).nunique()))
+    print(f"✅ Entity column flattened; {n_entities} entities for modeling")
 
-    prices = compute_price_features(prices, cfg.event_window)
-    benchmark = benchmark.sort_values("date").copy()
-    benchmark["mkt_ret_fwd_w"] = np.log(benchmark["close"].shift(-cfg.event_window) / benchmark["close"])
+    print("📈 Running OLS / QuantReg / LOGO CV...")
+    X_raw=merged_model[["polarity","vol_pre30","mkt_ret_fwd_w"]]
+    y=merged_model["ret_fwd_w"]
+    X=sm.add_constant(X_raw, has_constant="add")
+    ols=sm.OLS(y,X).fit(cov_type="HC3")
+    qres={q:sm.QuantReg(y,X).fit(q=q) for q in (0.25,0.5,0.75)}
+    ridge_pipe=Pipeline([("scaler",StandardScaler()),("ridge",Ridge(alpha=1.0))])
+    ridge_pipe.fit(X_raw,y)
+    rho,_=spearmanr(y,ridge_pipe.predict(X_raw),nan_policy="omit")
 
-    print(" Merging filings to prices by ENTITY...")
-    merged_list = []
-    for ent, f_df in filing_sent.groupby("entity"):
-        p_df = prices[prices["entity"] == ent].sort_values("date").copy()
-        if p_df.empty:
-            continue
-        idx = np.searchsorted(p_df["date"].values, f_df["filing_date"].values, side="left")
-        idx = np.clip(idx, 0, len(p_df) - 1)
-        take = p_df.iloc[idx].reset_index(drop=True)
-        merged = pd.concat([f_df.reset_index(drop=True), take.reset_index(drop=True)], axis=1)
-        merged_list.append(merged)
+    logo=LeaveOneGroupOut(); r2s_logo=[]
+    if n_entities>=2:
+        groups = merged_model["entity"]
+        if isinstance(groups, pd.DataFrame):
+            groups = groups.iloc[:, 0]
+        groups = pd.Series(groups).astype(str).reset_index(drop=True)
+        for tr, te in logo.split(X_raw, y, groups):
+            if len(te)<2: continue
+            X_tr,X_te=sm.add_constant(X_raw.iloc[tr]),sm.add_constant(X_raw.iloc[te])
+            X_te=X_te.reindex(columns=X_tr.columns, fill_value=0)
+            model=sm.OLS(y.iloc[tr],X_tr).fit(cov_type="HC3")
+            pred=model.predict(X_te)
+            score=r2_score(y.iloc[te],pred)
+            if np.isfinite(score): r2s_logo.append(score)
 
-    merged = pd.concat(merged_list, ignore_index=True) if merged_list else pd.DataFrame()
-    if merged.empty:
-        raise RuntimeError("No merged rows — verify same firms exist in mdna_sections and stock_prices.")
+    resid_z=(ols.resid-ols.resid.mean())/(ols.resid.std(ddof=0)+1e-9)
+    merged_model["resid_z"]=resid_z
+    merged_model["red_flag"]=(np.abs(resid_z)>cfg.z_thresh)|(np.sign(merged_model["polarity"])!=np.sign(merged_model["ret_fwd_w"]))
 
-    b_dates = benchmark["date"].values
-    i_b = np.searchsorted(b_dates, merged["filing_date"].values, side="left")
-    i_b = np.clip(i_b, 0, len(b_dates) - 1)
-    merged["mkt_ret_fwd_w"] = benchmark.iloc[i_b]["mkt_ret_fwd_w"].values
-
-    if "sector" not in merged.columns:
-        merged["sector"] = "Unknown"
-    if "size_mcap" not in merged.columns:
-        merged["size_mcap"] = np.nan
-
-    merged = merged.dropna(subset=["ret_fwd_w", "vol_pre30", "polarity"]).copy()
-
-    # ================= Modeling =================
-    print("📈 Running OLS / QuantReg / CV...")
-
-    # ---------- Build a single modeling frame M (coalescing dup columns) ----------
-    X_base = merged[["polarity", "vol_pre30", "mkt_ret_fwd_w"]].copy()
-    secD = pd.get_dummies(merged["sector"], prefix="sec", drop_first=True)
-    if not secD.empty:
-        X_base = pd.concat([X_base, secD], axis=1)
-
-    y_series = pick_series(merged, "ret_fwd_w")
-    grp_series = pick_series(merged, "entity").astype(str)
-
-    M = pd.concat(
-        [
-            X_base.reset_index(drop=True),
-            y_series.reset_index(drop=True).rename("y"),
-            grp_series.reset_index(drop=True).rename("group"),
-        ],
-        axis=1,
-    ).dropna().reset_index(drop=True)
-
-    # OLS on all data
-    X_full = sm.add_constant(M.drop(columns=["y", "group"]))
-    y_full = M["y"]
-    ols = sm.OLS(y_full, X_full).fit(cov_type="HC3")
-
-    # QuantReg on all data
-    qres = {}
-    for q in (0.25, 0.50, 0.75):
-        qr = sm.QuantReg(y_full, X_full).fit(q=q)
-        qres[q] = {"params": qr.params.to_dict(), "pvalues": qr.pvalues.to_dict()}
-
-    # ---------- Robust Group CV using boolean masks on M ----------
-    groups = M["group"].to_numpy().reshape(-1)
-    uniq, counts = np.unique(groups, return_counts=True)
-    keep_groups = set(uniq[counts >= 2])
-    M_cv = M.loc[np.isin(groups, list(keep_groups))].reset_index(drop=True) if len(keep_groups) >= 2 else M.copy()
-
-    # Base features (without y/group)
-    Z_all = M_cv.drop(columns=["y", "group"]).copy()
-    y_all = M_cv["y"].copy()
-    groups_cv = M_cv["group"].to_numpy().reshape(-1)
-
-    n_groups = np.unique(groups_cv).size
-    cv_folds_used = min(cfg.cv_folds, n_groups)
-
-    def add_const_and_align(df: pd.DataFrame, cols_ref: List[str] | None = None) -> pd.DataFrame:
-        df = df.copy()
-        if "const" not in df.columns:
-            df.insert(0, "const", 1.0)
-        if cols_ref is not None:
-            df = df.reindex(columns=cols_ref, fill_value=0.0)
-        return df
-
-    r2s = []
-    if cv_folds_used >= 2:
-        masks = group_kfold_masks(groups_cv, n_splits=cv_folds_used, random_state=cfg.random_state)
-        if not masks:
-            print(f"ℹ️ Not enough groups for CV after filtering (groups={n_groups}). Skipping CV.")
-        else:
-            for train_mask, test_mask in masks:
-                Z_tr = Z_all.loc[train_mask]
-                Z_te = Z_all.loc[test_mask]
-                y_tr = y_all.loc[train_mask]
-                y_te = y_all.loc[test_mask]
-
-                X_tr = add_const_and_align(Z_tr)
-                train_cols = list(X_tr.columns)
-                X_te = add_const_and_align(Z_te, cols_ref=train_cols)
-
-                m_cv = sm.OLS(y_tr, X_tr).fit(cov_type="HC3")
-                preds = m_cv.predict(X_te)
-                r2s.append(r2_score(y_te, preds))
-    else:
-        print(f"ℹ️ Not enough groups for CV (groups={n_groups}). Skipping CV.")
-
-    # anomalies on full-sample OLS
-    resid = ols.resid
-    resid_z = (resid - resid.mean()) / (resid.std(ddof=0) + 1e-9)
-    merged = merged.reset_index(drop=True)
-    merged["resid_z"] = resid_z.reindex(index=merged.index, fill_value=np.nan).to_numpy()
-    merged["red_flag"] = (np.abs(merged["resid_z"]) > cfg.z_thresh) | (
-        np.sign(merged["polarity"]) != np.sign(merged["ret_fwd_w"])
-    )
-
-    # ================= Persist + Visualize =================
-    print("💾 Writing results to DB and saving chart...")
-
-    # Coalesce duplicate-named columns before writing
-    merged = coalesce_dup_columns(
-        merged,
-        cols=["ticker", "cik", "entity", "filing_date", "date", "company_name"]
-    )
-
-    merged.to_sql("model_results", engine, schema=DB_SCHEMA, if_exists="replace", index=False)
-
-    cv_mean = float(np.mean(r2s)) if len(r2s) else float("nan")
-    summary = {
-        "ols_params": ols.params.to_dict(),
-        "ols_pvalues": ols.pvalues.to_dict(),
-        "ols_r2_adj": float(ols.rsquared_adj),
-        "cv_r2_mean": cv_mean,
-        "cv_r2_all": [float(x) for x in r2s],
-        "quantile": qres,
-        "backend": "FinBERT" if hasattr(SentimentEngine, "backend") and getattr(SentimentEngine, "backend", "") == "finbert" else "VADER",
-        "entity_note": "ENTITY = CIK if present in prices else ticker",
-        "min_paragraphs": cfg.min_paragraphs,
-        "n_entities": int(np.unique(groups).size),
-        "cv_folds_used": int(cv_folds_used),
+    print("🧾 Model summary (printed only, not saved):")
+    summary={
+        "ols_r2_adj":float(ols.rsquared_adj),
+        "ols_params":ols.params.to_dict(),
+        "ols_pvalues":ols.pvalues.to_dict(),
+        "quantile":{str(q):{"params":qres[q].params.to_dict()} for q in qres},
+        "logo_cv_r2_mean":float(np.mean(r2s_logo)) if r2s_logo else np.nan,
+        "spearman_rho_full":float(rho),
+        "n_entities":n_entities
     }
-    with open("model_results_summary.json", "w") as f:
-        json.dump(summary, f, indent=2)
+    for k,v in summary.items(): print(f"{k}: {v}")
 
-    fig = px.scatter(
-        merged,
-        x="polarity",
-        y="ret_fwd_w",
-        color=merged["red_flag"].map({True: "Red Flag", False: "Aligned"}),
-        hover_data=["entity", "ticker", "cik", "filing_date", "company_name"],
-        title="Narrative Polarity vs 30-Day Log Return",
-    )
-    fig.write_html(cfg.out_html)
+    print("\n📊 Top 10 merged_model rows (sample):")
+    print(merged_model.head(10)[["entity","ticker","company_name","filing_date","polarity","ret_fwd_w","vol_pre30"]])
 
-    print("=== OLS (key numbers) ===")
-    print(f"Adj. R²: {summary['ols_r2_adj']:.4f}")
-    if np.isfinite(cv_mean):
-        print(f"CV R² mean ({cv_folds_used} folds): {summary['cv_r2_mean']:.4f}")
-    else:
-        print("CV R² mean: (skipped; not enough groups)")
-    beta_pol = summary["ols_params"].get("polarity", float('nan'))
-    p_pol = summary["ols_pvalues"].get("polarity", float('nan'))
-    print(f"β_polarity: {beta_pol:.4f} (p={p_pol:.4g})")
-    print(f"✅ Done. Chart saved to: {cfg.out_html}")
+    print(f"\nAdj.R²={summary['ols_r2_adj']:.4f} | Entities={n_entities} | ✅ Done → {cfg.out_html}")
 
-if __name__ == "__main__":
+
+    dfp=merged_model.dropna(subset=["polarity","ret_fwd_w"]).copy()
+    dfp["flag_label"]=dfp["red_flag"].map({True:"Red Flag",False:"Aligned"})
+
+    dfp = dfp.loc[:, ~dfp.columns.duplicated()].copy()
+    dfp.columns = pd.io.parsers._parser.ParserBase({'names': dfp.columns})._maybe_dedup_names(dfp.columns) if hasattr(pd.io.parsers, "_parser") else pd.Index(
+    [f"{c}_{i}" if c in dfp.columns[:i] else c for i, c in enumerate(dfp.columns)])
+    px.scatter(
+        dfp, x="polarity", y="ret_fwd_w", color="flag_label",
+        hover_data=["entity","ticker","company_name","filing_date"],
+        title="Narrative Polarity vs 30-Day Log Return"
+    ).write_html(cfg.out_html)
+    print(f"\nAdj.R²={summary['ols_r2_adj']:.4f} | Entities={n_entities} | ✅ Done → {cfg.out_html}")
+
+if __name__=="__main__":
     main()

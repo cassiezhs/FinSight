@@ -238,9 +238,20 @@ def extract_mdna_from_main_html(html_url: str) -> str:
 # ---------------- Demo/main ---------------- #
 
 if __name__ == "__main__":
-    for tkr in ["NVDA"]:
+    for tkr in [
+        "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "BRK-B", "UNH", "JNJ",
+        "V", "XOM", "PG", "JPM", "MA", "HD", "LLY", "CVX", "MRK", "PEP",
+        "KO", "ABBV", "BAC", "COST", "AVGO", "TMO", "DIS", "WMT", "ADBE", "CRM",
+        "NFLX", "PFE", "MCD", "TXN", "ABT", "DHR", "INTC", "NKE", "VZ", "QCOM",
+        "MDT", "NEE", "ACN", "AMGN", "LOW", "MS", "SBUX", "UPS", "RTX", "LIN",
+        "HON", "UNP", "INTU", "BA", "LMT", "CAT", "T", "ISRG", "PLD", "NOW",
+        "GILD", "SPGI", "BLK", "ELV", "BKNG", "ZTS", "MO", "DE", "CI", "C",
+        "SCHW", "MDLZ", "SO", "ADP", "SYK", "MMC", "PNC", "AXP", "ETN", "TJX",
+        "FDX", "APD", "REGN", "CL", "ADSK", "BSX", "EMR", "WBA", "HUM", "BIIB",
+        "ORCL", "GD", "CMCSA", "CSCO", "GM", "PYPL", "TGT", "EBAY", "BK", "COF"
+    ]:
         cik = get_cik(tkr)
-        for yr in [2023, 2024, 2025]:
+        for yr in range(2018, 2025 + 1):
             idx_url, filing_date = get_10k_meta_for_year(cik, yr)
             if not idx_url:
                 print(f"❌ No 10-K for {tkr} {yr}")
