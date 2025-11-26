@@ -322,7 +322,7 @@ def fit_models(df: pd.DataFrame, target_col: str, mkt_col: str) -> Dict[str, flo
     y_np = np.asarray(y).ravel()
 
     if not (len(groups) == len(X_np) == len(y_np)):
-        print(f"⚠️ Length mismatch before LOGO: len(X)={len(X_np)}, len(y)={len(y_np)}, len(groups)={len(groups)}")
+        #print(f"⚠️ Length mismatch before LOGO: len(X)={len(X_np)}, len(y)={len(y_np)}, len(groups)={len(groups)}")
         min_len = min(len(X_np), len(y_np), len(groups))
         X_np, y_np, groups = X_np[:min_len], y_np[:min_len], groups[:min_len]
 

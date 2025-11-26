@@ -33,8 +33,8 @@ if __name__ == "__main__":
         "ORCL", "GD", "CMCSA", "CSCO", "GM", "PYPL", "TGT", "EBAY", "BK", "COF"
     ]
 
-    start_date = "2024-01-01"
-    end_date = "2025-09-30"
+    start_date = "2018-01-01"
+    end_date = "2025-10-31"
 
     all_data = []
 

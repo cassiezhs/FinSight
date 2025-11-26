@@ -36,8 +36,8 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME")
 DB_SCHEMA = os.getenv("DB_SCHEMA", "public")
 
-START_DATE = "2024-01-01"
-END_DATE = "2025-09-30"
+START_DATE = "2018-01-01"
+END_DATE = "2025-10-31"
 START_YEAR = 2018
 END_YEAR = 2025
 
@@ -214,9 +214,9 @@ if __name__ == "__main__":
     save_to_db(sp500_df, "sp500_index", engine, replace=False)
 
     # --- 2. SEC Filings (Risk + MD&A) ---
-    df_risk, df_mdna = collect_sec_sections(TICKERS, START_YEAR, END_YEAR)
-    upsert_sections(df_risk, engine, "risk_sections")
-    upsert_sections(df_mdna, engine, "mdna_sections")
+    #df_risk, df_mdna = collect_sec_sections(TICKERS, START_YEAR, END_YEAR)
+    #upsert_sections(df_risk, engine, "risk_sections")
+    #upsert_sections(df_mdna, engine, "mdna_sections")
 
     # --- 3. Summary ---
     print("\n📊 Data Load Complete!")
@@ -224,7 +224,7 @@ if __name__ == "__main__":
         print(f"Stock prices: {len(combined_df)} rows")
     if not sp500_df.empty:
         print(f"S&P 500: {len(sp500_df)} rows")
-    if not df_risk.empty:
-        print(f"Risk sections: {len(df_risk)} rows")
-    if not df_mdna.empty:
-        print(f"MD&A sections: {len(df_mdna)} rows")
+    # if not df_risk.empty:
+    #     print(f"Risk sections: {len(df_risk)} rows")
+    # if not df_mdna.empty:
+    #     print(f"MD&A sections: {len(df_mdna)} rows")
