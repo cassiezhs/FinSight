@@ -2,12 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Modeling Pipeline v3a — Sentiment → Returns (stable)
-Fixes vs v3:
-- Robust sentiment extraction via label mapping (no order assumptions)
-- Clean entity reconciliation (no duplicated try blocks)
-- Per-entity merge_asof is stable and sorted
-- Drop NaN/±inf before modeling; consistent TimeSeries CV indexing
-- Always reports window comparison table
+Includes chart generation for Phase 4 presentation.
 """
 
 import os, re, json
@@ -99,9 +94,6 @@ class SentimentEngine:
 
     @staticmethod
     def _extract_triplet(res_item: List[dict]) -> Tuple[float, float, float]:
-        """
-        Map by label, not index. FinBERT labels: POSITIVE/NEGATIVE/NEUTRAL
-        """
         lbls = {d["label"].lower(): float(d["score"]) for d in res_item if isinstance(d, dict)}
         p_pos = lbls.get("positive", 0.0)
         p_neg = lbls.get("negative", 0.0)
@@ -110,14 +102,12 @@ class SentimentEngine:
 
     def score_dataframe(self, df: pd.DataFrame, text_col: str = "text") -> pd.DataFrame:
         texts = df[text_col].astype(str).tolist()
-        raw = self.pipe(texts)  # returns List[List[dict]] or List[dict] depending on model
-        # Normalize to List[List[dict]]
+        raw = self.pipe(texts)
         packed = [r if isinstance(r, list) else [r] for r in raw]
         triplets = [self._extract_triplet(r) for r in packed]
         out = df.copy()
         out[["p_pos", "p_neu", "p_neg"]] = pd.DataFrame(triplets, index=out.index)
         out["polarity"] = out["p_pos"] - out["p_neg"]
-        # a simple confidence proxy: 1 - neutral
         out["conf_w"] = 1.0 - out["p_neu"].clip(lower=0.0, upper=1.0)
         return out
 
@@ -174,7 +164,6 @@ def load_frames(engine):
 def aggregate_to_filing(engine, filings_scored: pd.DataFrame) -> pd.DataFrame:
     d = filings_scored.copy()
 
-    # Weighted means (confidence weight); keep ≥1 paragraph per filing
     keys = ["entity", "ticker", "company_name", "filing_date"]
     g = d.groupby(keys, dropna=False)
     out = g.apply(
@@ -186,9 +175,8 @@ def aggregate_to_filing(engine, filings_scored: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
 
     out["polarity"] = out["pos_mean"] - out["neg_mean"]
-    out = out[out["para_count"] >= 1].copy()
+    out = out[out["para_count"] >= 1]
 
-    # Tone change / shock
     out = out.sort_values(["entity", "filing_date"], kind="mergesort")
     out["tone_change"] = out.groupby("entity", sort=False)["polarity"].diff()
     q_hi, q_lo = out["tone_change"].quantile([0.95, 0.05])
@@ -196,7 +184,6 @@ def aggregate_to_filing(engine, filings_scored: pd.DataFrame) -> pd.DataFrame:
 
     print(f"✅ After relaxed filtering — entities: {out['entity'].nunique()} | rows: {len(out)}")
 
-    # Reconcile entities using company_ref, merging on ticker only (avoid name collisions)
     with engine.connect() as conn:
         ref = pd.read_sql(f'''
             SELECT cik AS ref_entity, ticker
@@ -208,7 +195,7 @@ def aggregate_to_filing(engine, filings_scored: pd.DataFrame) -> pd.DataFrame:
     ref["ref_entity"] = ref["ref_entity"].astype(str)
     out = out.merge(ref[["ticker", "ref_entity"]], on="ticker", how="left")
     out["entity"] = out["entity"].fillna(out["ref_entity"]).astype(str)
-    out.drop(columns=["ref_entity"], inplace=True, errors="ignore")
+    out.drop(columns=["ref_entity"], inplace=True)
 
     print(f"✅ After entity reconciliation — entities: {out['entity'].nunique()} | rows: {len(out)}")
     return out
@@ -263,29 +250,20 @@ def merge_asof_safe(filing_sent: pd.DataFrame, prices: pd.DataFrame) -> pd.DataF
     return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
 
 def fit_models(df: pd.DataFrame, target_col: str, mkt_col: str) -> Dict[str, float]:
-    """
-    Fit OLS and Ridge models, with Leave-One-Group-Out (by entity)
-    and time-series cross-validation.
-
-    Automatically handles missing/inf data and entity column alignment.
-    """
-    # Clean and validate input
     mm = df.replace([np.inf, -np.inf], np.nan).dropna(
         subset=[target_col, "polarity", "vol_pre30", mkt_col, "tone_change"]
     ).copy()
 
-    # Handle duplicated entity columns (from merge)
     entity_cols = [c for c in mm.columns if c.startswith("entity")]
     if "entity" not in mm.columns and entity_cols:
         mm["entity"] = mm[entity_cols[0]]
     elif "entity_x" in mm.columns and "entity_y" in mm.columns:
         mm["entity"] = mm["entity_x"].fillna(mm["entity_y"])
-        mm.drop(columns=["entity_x", "entity_y"], inplace=True, errors="ignore")
+        mm.drop(columns=["entity_x", "entity_y"], inplace=True)
 
     if mm.empty:
         return {"ols_adj_r2": np.nan, "logo_cv_r2_mean": np.nan, "timecv_r2_mean": np.nan, "n_obs": 0}
 
-    # Interaction terms
     mm["polarity_x_vol"] = mm["polarity"] * mm["vol_pre30"]
     mm["polarity_x_mkt"] = mm["polarity"] * mm[mkt_col]
 
@@ -302,27 +280,22 @@ def fit_models(df: pd.DataFrame, target_col: str, mkt_col: str) -> Dict[str, flo
     X_raw = mm[predictors]
     y = mm[target_col]
 
-    # ----- OLS -----
+    # OLS
     X_ols = sm.add_constant(X_raw, has_constant="add")
     ols = sm.OLS(y, X_ols).fit(cov_type="HC3")
 
-    # ----- Ridge (in-sample) -----
     ridge_pipe = Pipeline(
         [("scaler", StandardScaler()), ("ridge", Ridge(alpha=1.0, random_state=42))]
     )
     ridge_pipe.fit(X_raw, y)
     rho, _ = spearmanr(y, ridge_pipe.predict(X_raw), nan_policy="omit")
 
-    # ----- Leave-One-Group-Out CV -----
     logo = LeaveOneGroupOut()
-
-    # Ensure all have consistent lengths
     groups = mm["entity"].astype(str).values.ravel()
     X_np = np.asarray(X_raw)
     y_np = np.asarray(y).ravel()
 
     if not (len(groups) == len(X_np) == len(y_np)):
-        #print(f"⚠️ Length mismatch before LOGO: len(X)={len(X_np)}, len(y)={len(y_np)}, len(groups)={len(groups)}")
         min_len = min(len(X_np), len(y_np), len(groups))
         X_np, y_np, groups = X_np[:min_len], y_np[:min_len], groups[:min_len]
 
@@ -337,7 +310,7 @@ def fit_models(df: pd.DataFrame, target_col: str, mkt_col: str) -> Dict[str, flo
         r2s_logo.append(r2_score(y_np[te], pred))
     logo_mean = float(np.nanmean(r2s_logo)) if len(r2s_logo) else np.nan
 
-    # ----- TimeSeries CV -----
+    # TimeSeries CV
     sort_col = "f_date" if "f_date" in mm.columns else "filing_date"
     mm_ord = mm.sort_values([sort_col], kind="mergesort")
     X_ord = mm_ord[predictors].to_numpy()
@@ -353,7 +326,6 @@ def fit_models(df: pd.DataFrame, target_col: str, mkt_col: str) -> Dict[str, flo
         r2s_time.append(r2_score(y_ord[te], pred))
     time_mean = float(np.nanmean(r2s_time)) if len(r2s_time) else np.nan
 
-    # ----- Output summary -----
     return {
         "ols_adj_r2": float(ols.rsquared_adj),
         "ols_params": {k: float(v) for k, v in ols.params.items()},
@@ -365,17 +337,21 @@ def fit_models(df: pd.DataFrame, target_col: str, mkt_col: str) -> Dict[str, flo
     }
 
 # ---------------- Runner per window ----------------
-def run_for_window(filing_sent: pd.DataFrame, prices: pd.DataFrame, benchmark: pd.DataFrame, window: int) -> Dict:
+def run_for_window(filing_sent: pd.DataFrame, prices: pd.DataFrame, benchmark: pd.DataFrame, window: int):
     p = compute_price_features(prices, window)
     merged = merge_asof_safe(filing_sent, p)
-    if merged.empty:
-        return {"window": window, "ols_adj_r2": np.nan, "logo_cv_r2_mean": np.nan, "timecv_r2_mean": np.nan, "n_obs": 0}
 
-    # add market forward
+    # Early return if empty
+    if merged.empty:
+        return {"window": window, "ols_adj_r2": np.nan, "logo_cv_r2_mean": np.nan,
+                "timecv_r2_mean": np.nan, "n_obs": 0}, merged
+
+    # Add benchmark forward returns
     b = benchmark.sort_values("date").copy()
     b["close"] = pd.to_numeric(b["close"], errors="coerce")
     b = b.dropna(subset=["close"])
     b[f"mkt_ret_fwd_{window}d"] = np.log(b["close"].shift(-window) / b["close"])
+
     merged = pd.merge_asof(
         merged.sort_values("f_date"),
         b[["date", f"mkt_ret_fwd_{window}d"]].sort_values("date"),
@@ -385,16 +361,20 @@ def run_for_window(filing_sent: pd.DataFrame, prices: pd.DataFrame, benchmark: p
 
     target = f"ret_fwd_{window}d"
     mkt_col = f"mkt_ret_fwd_{window}d"
+
     res = fit_models(merged, target, mkt_col)
     res["window"] = window
 
-    # attach tiny preview (safe columns)
-    keep = ["entity", "ticker", "company_name", "filing_date", "polarity", "tone_change", "vol_pre30", target, mkt_col]
+    # Tiny preview
+    keep = ["entity", "ticker", "company_name", "filing_date", "polarity", "tone_change",
+            "vol_pre30", target, mkt_col]
     prev_cols = [c for c in keep if c in merged.columns]
+
     if prev_cols:
-        prev = merged.sort_values("filing_date").head(cfg.max_rows_preview)[prev_cols]
-        res["preview"] = prev
-    return res
+        res["preview"] = merged.sort_values("filing_date").head(cfg.max_rows_preview)[prev_cols]
+
+    return res, merged
+
 
 # ---------------- Main ----------------
 def main():
@@ -415,7 +395,14 @@ def main():
     print(f"ℹ️ Missing in filings: {len(missing)}")
 
     # Run windows
-    results = [run_for_window(filing_sent, prices, benchmark, w) for w in cfg.event_windows]
+    results = []
+    merged_frames = {}
+
+    for w in cfg.event_windows:
+        res, merged_df = run_for_window(filing_sent, prices, benchmark, w)
+        results.append(res)
+        merged_frames[w] = merged_df
+
 
     # Summarize
     df = pd.DataFrame(results)
@@ -426,7 +413,7 @@ def main():
     else:
         print("(no results)")
 
-    # Best window by Adj R² (if available)
+    # Best window by Adj R²
     if "ols_adj_r2" in df.columns and df["ols_adj_r2"].notna().any():
         best_idx = df["ols_adj_r2"].astype(float).idxmax()
         best = results[int(best_idx)]
@@ -441,10 +428,135 @@ def main():
             print("\nSample rows:")
             print(best["preview"].to_string(index=False))
 
-    # Optional: write a tiny JSON summary for quick reuse
+    # ============================
+    # 📊 CHART GENERATION SECTION
+    # ============================
+    print("\n📊 Generating charts...")
+
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    df_window = pd.DataFrame(results)
+
+    # 1. Window Performance
+    fig1 = px.bar(
+        df_window,
+        x="window",
+        y="ols_adj_r2",
+        title="Window Comparison – Adjusted R²",
+        text="ols_adj_r2",
+        labels={"window": "Window (days)", "ols_adj_r2": "Adjusted R²"}
+    )
+    fig1.update_traces(texttemplate='%{text:.4f}')
+    fig1.show()
+
+    # 2. Polarity vs Forward Return
+    best_window = int(best.get("window"))
+    merged_best = merged_frames[best_window]
+        # Clean duplicated columns before charting
+    merged_best = merged_frames[best_window].copy()
+
+    # If "entity_x/entity_y" appear → choose one and drop the other
+    if "entity_x" in merged_best.columns and "entity_y" in merged_best.columns:
+        merged_best["entity"] = merged_best["entity_x"].fillna(merged_best["entity_y"])
+        merged_best = merged_best.drop(columns=["entity_x", "entity_y"], errors="ignore")
+
+    # If plain duplicate column names exist → rename them safely
+    merged_best = merged_best.loc[:, ~merged_best.columns.duplicated()].copy()
+
+    # Same fix for ticker
+    if "ticker_x" in merged_best.columns and "ticker_y" in merged_best.columns:
+        merged_best["ticker"] = merged_best["ticker_x"].fillna(merged_best["ticker_y"])
+        merged_best = merged_best.drop(columns=["ticker_x", "ticker_y"], errors="ignore")
+
+
+    if f"ret_fwd_{best_window}d" in merged_best.columns:
+        df2 = merged_best.dropna(subset=["polarity", f"ret_fwd_{best_window}d"])
+
+        fig2 = px.scatter(
+            df2,
+            x="polarity",
+            y=f"ret_fwd_{best_window}d",
+            title=f"Polarity vs Forward {best_window}-Day Return",
+            trendline="ols",
+            labels={"polarity": "MD&A Polarity", f"ret_fwd_{best_window}d": f"{best_window}-Day Return"}
+        )
+        fig2.show()
+
+    # 3. Tone Change vs Forward Return
+    if f"ret_fwd_{best_window}d" in merged_best.columns:
+        df3 = merged_best.dropna(subset=["tone_change", f"ret_fwd_{best_window}d"])
+
+        fig3 = px.scatter(
+            df3,
+            x="tone_change",
+            y=f"ret_fwd_{best_window}d",
+            title=f"Tone Change vs Forward {best_window}-Day Return",
+            trendline="ols",
+            labels={"tone_change": "Tone Change", f"ret_fwd_{best_window}d": f"{best_window}-Day Return"}
+        )
+        fig3.show()
+
+    # 4. Polarity Distribution
+    fig4 = px.histogram(
+        filing_sent,
+        x="polarity",
+        nbins=50,
+        marginal="box",
+        title="Distribution of MD&A Polarity Scores",
+        labels={"polarity": "Polarity Score"}
+    )
+    fig4.show()
+
+    # 5. Polarity Timeline for a Sample Ticker
+    ticker_choice = "AAPL"
+    df5 = filing_sent[filing_sent["ticker"] == ticker_choice].sort_values("filing_date")
+
+    if not df5.empty:
+        fig5 = px.line(
+            df5,
+            x="filing_date",
+            y="polarity",
+            title=f"Polarity Over Time — {ticker_choice}",
+            markers=True,
+            labels={"filing_date": "Filing Date", "polarity": "MD&A Polarity"}
+        )
+        fig5.show()
+
+        # 6. Tone Shocks Highlight
+        df6 = df5.copy()
+        df6["is_shock"] = df6["tone_shock"].astype(bool)
+
+        fig6 = go.Figure()
+
+        fig6.add_trace(go.Scatter(
+            x=df6["filing_date"],
+            y=df6["polarity"],
+            mode="lines+markers",
+            name="Polarity"
+        ))
+
+        fig6.add_trace(go.Scatter(
+            x=df6[df6["is_shock"]]["filing_date"],
+            y=df6[df6["is_shock"]]["polarity"],
+            mode="markers",
+            marker=dict(size=12, color="red"),
+            name="Tone Shock"
+        ))
+
+        fig6.update_layout(
+            title=f"Tone Shocks Highlighted — {ticker_choice}",
+            xaxis_title="Filing Date",
+            yaxis_title="Polarity"
+        )
+        fig6.show()
+    else:
+        print(f"⚠️ No filings found for ticker {ticker_choice} — skipping timeline charts.")
+
+    # Save JSON summary (unchanged)
     try:
         with open("model_results_summary_v3a.json", "w") as f:
-            json.dump({"windows": comp.to_dict(orient="records")}, f, indent=2, default=str)
+            json.dump({"windows": df.to_dict(orient="records")}, f, indent=2, default=str)
         print("\n🧾 Saved window summary → model_results_summary_v3a.json")
     except Exception as e:
         print(f"\n⚠️ Could not save JSON summary: {e}")
