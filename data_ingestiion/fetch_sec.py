@@ -3,7 +3,46 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
-UA = {"User-Agent": "zihanshao1996@gmail.com"}  # single, consistent UA
+try:
+    from .config import TICKERS, settings
+except ImportError:
+    from config import TICKERS, settings
+
+UA = {"User-Agent": settings.sec_user_agent}
+
+SEC_8K_ITEM_DESCRIPTIONS = {
+    "1.01": "Entry into a Material Definitive Agreement",
+    "1.02": "Termination of a Material Definitive Agreement",
+    "1.03": "Bankruptcy or Receivership",
+    "1.04": "Mine Safety - Reporting of Shutdowns and Patterns of Violations",
+    "2.01": "Completion of Acquisition or Disposition of Assets",
+    "2.02": "Results of Operations and Financial Condition",
+    "2.03": "Creation of a Direct Financial Obligation",
+    "2.04": "Triggering Events That Accelerate or Increase a Direct Financial Obligation",
+    "2.05": "Costs Associated with Exit or Disposal Activities",
+    "2.06": "Material Impairments",
+    "3.01": "Notice of Delisting or Failure to Satisfy Listing Rule",
+    "3.02": "Unregistered Sales of Equity Securities",
+    "3.03": "Material Modification to Rights of Security Holders",
+    "4.01": "Changes in Registrant's Certifying Accountant",
+    "4.02": "Non-Reliance on Previously Issued Financial Statements",
+    "5.01": "Changes in Control of Registrant",
+    "5.02": "Departure or Appointment of Directors or Officers",
+    "5.03": "Amendments to Articles of Incorporation or Bylaws",
+    "5.04": "Temporary Suspension of Trading Under Employee Benefit Plans",
+    "5.05": "Amendments to Code of Ethics",
+    "5.06": "Change in Shell Company Status",
+    "5.07": "Submission of Matters to a Vote of Security Holders",
+    "5.08": "Shareholder Director Nominations",
+    "6.01": "ABS Informational and Computational Material",
+    "6.02": "Change of Servicer or Trustee",
+    "6.03": "Change in Credit Enhancement or External Support",
+    "6.04": "Failure to Make Required Distribution",
+    "6.05": "Securities Act Updating Disclosure",
+    "7.01": "Regulation FD Disclosure",
+    "8.01": "Other Events",
+    "9.01": "Financial Statements and Exhibits",
+}
 
 # ---------------- Text helpers ---------------- #
 
@@ -18,7 +57,7 @@ def _normalize_text(html: str) -> tuple[str, str]:
 def _compile_label_pattern(label: str) -> re.Pattern:
     """
     Turn 'item 1a' into a regex that tolerates NBSP and punctuation.
-    Example: r'\bitem[\s\xa0]*1a\b[.\-–—: ]*'
+    Example: r'\\bitem[\\s\\xa0]*1a\\b[.\\-–—: ]*'
     """
     parts = label.split()
     joined = r"[\s\xa0]*".join(map(re.escape, parts))
@@ -105,6 +144,110 @@ def _fallback_heading_grab(orig: str, lower: str, heading_words: list[str], end_
 
     return orig[s0:e0].strip()
 
+def describe_8k_items(items: str) -> str:
+    codes = [item.strip() for item in re.split(r"[,;]", items or "") if item.strip()]
+    descriptions = [
+        f"{code}: {SEC_8K_ITEM_DESCRIPTIONS.get(code, 'Unmapped 8-K item')}"
+        for code in codes
+    ]
+    return "; ".join(descriptions)
+
+def _truncate_text(text: str, max_chars: int = 1400) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars].rsplit(" ", 1)[0].rstrip()
+    return f"{cut}..."
+
+def _extract_event_text_from_html(html: str, item_codes: str, max_chars: int = 1400) -> str:
+    orig, lower = _normalize_text(html)
+    codes = [item.strip() for item in re.split(r"[,;]", item_codes or "") if item.strip()]
+    sections = []
+
+    for code in codes:
+        label = f"item {code}"
+        section = _find_best_section(
+            orig,
+            lower,
+            start_label=label,
+            end_labels=[
+                "item 1.01", "item 1.02", "item 1.03", "item 2.01", "item 2.02",
+                "item 2.03", "item 2.04", "item 2.05", "item 2.06", "item 3.01",
+                "item 3.02", "item 3.03", "item 4.01", "item 4.02", "item 5.01",
+                "item 5.02", "item 5.03", "item 5.04", "item 5.05", "item 5.06",
+                "item 5.07", "item 5.08", "item 7.01", "item 8.01", "item 9.01",
+                "signatures",
+            ],
+            prefer_after_label=None,
+            min_chars=80,
+        )
+        if section and len(section) > 80:
+            sections.append(section)
+
+    if sections:
+        return _truncate_text(" ".join(sections), max_chars)
+
+    return _truncate_text(orig, max_chars)
+
+def _get_filing_package_html_urls(index_url: str, primary_document: str) -> list[tuple[str, str]]:
+    resp = requests.get(index_url, headers=UA, timeout=60)
+    if resp.status_code != 200:
+        return []
+
+    data = resp.json()
+    files = data.get("directory", {}).get("item", []) or []
+    ranked = []
+    for file_info in files:
+        name = file_info.get("name", "")
+        lname = name.lower()
+        doc_type = file_info.get("type", "")
+        if not lname.endswith((".htm", ".html")) or lname.endswith("_htm.xml"):
+            continue
+
+        rank = 99
+        if name == primary_document:
+            rank = 0
+        elif "ex-99" in lname or "ex99" in lname or doc_type.upper().startswith("EX-99"):
+            rank = 1
+        elif "ex-10" in lname or doc_type.upper().startswith("EX-10"):
+            rank = 2
+        elif lname.startswith("ex"):
+            rank = 3
+
+        if rank < 99:
+            ranked.append((rank, name, index_url.replace("index.json", name)))
+
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [(name, url) for _, name, url in ranked[:3]]
+
+def extract_8k_detail_preview(
+    filing_url: str,
+    filing_index_url: str,
+    primary_document: str,
+    item_codes: str,
+    max_chars: int = 1400,
+) -> tuple[str, str]:
+    """Extract a concise non-AI preview from the primary 8-K and key exhibits."""
+    urls = _get_filing_package_html_urls(filing_index_url, primary_document)
+    if not urls and filing_url:
+        urls = [(primary_document or "primary filing", filing_url)]
+
+    snippets = []
+    sources = []
+    for name, url in urls:
+        try:
+            resp = requests.get(url, headers=UA, timeout=60)
+            if resp.status_code != 200:
+                continue
+            snippet = _extract_event_text_from_html(resp.text, item_codes, max_chars=700)
+            if snippet and snippet not in snippets:
+                snippets.append(snippet)
+                sources.append(name)
+        except Exception:
+            continue
+
+    return _truncate_text(" ".join(snippets), max_chars), ", ".join(sources)
+
 # ---------------- SEC helpers ---------------- #
 
 def get_cik(ticker: str) -> str | None:
@@ -185,6 +328,59 @@ def get_10k_html_url(doc_index_url: str) -> str | None:
 
     return None
 
+def get_8k_meta(cik: str, ticker: str, start_year: int, end_year: int) -> list[dict]:
+    """Return recent 8-K/8-K-A metadata rows filed within the selected calendar years."""
+    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+    resp = requests.get(url, headers=UA, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+
+    recent = data.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    dates = recent.get("filingDate", [])
+    accession_numbers = recent.get("accessionNumber", [])
+    primary_documents = recent.get("primaryDocument", [])
+    primary_descriptions = recent.get("primaryDocDescription", [])
+    items = recent.get("items", [])
+
+    rows = []
+    for i, form in enumerate(forms):
+        if form not in {"8-K", "8-K/A"}:
+            continue
+
+        filing_date = dates[i]
+        filing_year = int(filing_date[:4])
+        if filing_year < start_year or filing_year > end_year:
+            continue
+
+        accession_number = accession_numbers[i]
+        accession_no_dash = accession_number.replace("-", "")
+        primary_document = primary_documents[i] if i < len(primary_documents) else ""
+        filing_url = (
+            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
+            f"{accession_no_dash}/{primary_document}"
+            if primary_document else
+            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession_no_dash}/"
+        )
+        filing_index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession_no_dash}/index.json"
+        item_codes = items[i] if i < len(items) else ""
+
+        rows.append({
+            "cik": cik,
+            "ticker": ticker.upper(),
+            "filing_date": filing_date,
+            "accession_number": accession_number,
+            "form_type": form,
+            "items": item_codes,
+            "item_descriptions": describe_8k_items(item_codes),
+            "primary_document": primary_document,
+            "primary_doc_description": primary_descriptions[i] if i < len(primary_descriptions) else "",
+            "filing_url": filing_url,
+            "filing_index_url": filing_index_url,
+        })
+
+    return rows
+
 # ---------------- Section extractors ---------------- #
 
 def extract_risk_from_main_html(html_url: str) -> str:
@@ -238,20 +434,9 @@ def extract_mdna_from_main_html(html_url: str) -> str:
 # ---------------- Demo/main ---------------- #
 
 if __name__ == "__main__":
-    for tkr in [
-        "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "BRK-B", "UNH", "JNJ",
-        "V", "XOM", "PG", "JPM", "MA", "HD", "LLY", "CVX", "MRK", "PEP",
-        "KO", "ABBV", "BAC", "COST", "AVGO", "TMO", "DIS", "WMT", "ADBE", "CRM",
-        "NFLX", "PFE", "MCD", "TXN", "ABT", "DHR", "INTC", "NKE", "VZ", "QCOM",
-        "MDT", "NEE", "ACN", "AMGN", "LOW", "MS", "SBUX", "UPS", "RTX", "LIN",
-        "HON", "UNP", "INTU", "BA", "LMT", "CAT", "T", "ISRG", "PLD", "NOW",
-        "GILD", "SPGI", "BLK", "ELV", "BKNG", "ZTS", "MO", "DE", "CI", "C",
-        "SCHW", "MDLZ", "SO", "ADP", "SYK", "MMC", "PNC", "AXP", "ETN", "TJX",
-        "FDX", "APD", "REGN", "CL", "ADSK", "BSX", "EMR", "WBA", "HUM", "BIIB",
-        "ORCL", "GD", "CMCSA", "CSCO", "GM", "PYPL", "TGT", "EBAY", "BK", "COF"
-    ]:
+    for tkr in TICKERS:
         cik = get_cik(tkr)
-        for yr in range(2018, 2025 + 1):
+        for yr in range(settings.start_year, settings.end_year + 1):
             idx_url, filing_date = get_10k_meta_for_year(cik, yr)
             if not idx_url:
                 print(f"❌ No 10-K for {tkr} {yr}")

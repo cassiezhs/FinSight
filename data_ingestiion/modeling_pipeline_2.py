@@ -21,16 +21,17 @@ from sklearn.metrics import r2_score
 from sklearn.pipeline import Pipeline
 from scipy.stats import spearmanr
 
+try:
+    from .config import settings
+    from .db import get_engine
+except ImportError:
+    from config import settings
+    from db import get_engine
+
 # ---------------- Config / Env ----------------
 pd.options.mode.copy_on_write = True
 load_dotenv()
-
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME")
-DB_SCHEMA = os.getenv("DB_SCHEMA", "public")
+DB_SCHEMA = settings.db_schema
 
 class CFG:
     event_windows: Tuple[int, ...] = (15, 30, 60, 90)
@@ -38,11 +39,6 @@ class CFG:
     max_rows_preview: int = 12
 
 cfg = CFG()
-
-# ---------------- DB helpers ----------------
-def get_engine():
-    url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    return create_engine(url, pool_pre_ping=True)
 
 def ensure_company_ref_table(engine):
     import requests
@@ -54,7 +50,7 @@ def ensure_company_ref_table(engine):
         print("ℹ️ company_ref not found — creating...")
     data = requests.get(
         "https://www.sec.gov/files/company_tickers.json",
-        headers={"User-Agent": "zihanshao1996@gmail.com"},
+        headers={"User-Agent": settings.sec_user_agent},
         timeout=60
     ).json()
     df = pd.DataFrame.from_dict(data, orient="index").rename(

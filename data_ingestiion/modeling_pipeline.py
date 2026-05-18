@@ -20,15 +20,17 @@ from sklearn.pipeline import Pipeline
 from scipy.stats import spearmanr
 import plotly.express as px
 
+try:
+    from .config import settings
+    from .db import get_engine
+except ImportError:
+    from config import settings
+    from db import get_engine
+
 # ======================= Config =======================
 pd.options.mode.copy_on_write = True
 load_dotenv()
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME")
-DB_SCHEMA = os.getenv("DB_SCHEMA", "public")
+DB_SCHEMA = settings.db_schema
 
 @dataclass
 class CFG:
@@ -38,13 +40,6 @@ class CFG:
     out_html: str = "model_scatter.html"
 
 cfg = CFG()
-
-# ================= DB Engine =================
-def get_engine():
-    if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_NAME]):
-        raise RuntimeError("Missing DB env vars.")
-    url = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    return create_engine(url, pool_pre_ping=True)
 
 # ================= Company Ref =================
 def ensure_company_ref_table(engine):
@@ -56,7 +51,7 @@ def ensure_company_ref_table(engine):
         print("ℹ️ company_ref not found — creating...")
     data = requests.get(
         "https://www.sec.gov/files/company_tickers.json",
-        headers={"User-Agent": "zihanshao1996@gmail.com"}, timeout=60
+        headers={"User-Agent": settings.sec_user_agent}, timeout=60
     ).json()
     df = pd.DataFrame.from_dict(data, orient="index")\
         .rename(columns={"cik_str": "cik", "title": "company_name"})

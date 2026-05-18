@@ -2,6 +2,11 @@ import yfinance as yf
 import pandas as pd
 import time
 
+try:
+    from .config import TICKERS, settings
+except ImportError:
+    from config import TICKERS, settings
+
 def fetch_stock_data(ticker_symbol, start_date, end_date):
     try:
         ticker = yf.Ticker(ticker_symbol)
@@ -20,27 +25,11 @@ def fetch_stock_data(ticker_symbol, start_date, end_date):
         return pd.DataFrame()
 
 if __name__ == "__main__":
-    tickers = [
-        "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "BRK-B", "UNH", "JNJ",
-        "V", "XOM", "PG", "JPM", "MA", "HD", "LLY", "CVX", "MRK", "PEP",
-        "KO", "ABBV", "BAC", "COST", "AVGO", "TMO", "DIS", "WMT", "ADBE", "CRM",
-        "NFLX", "PFE", "MCD", "TXN", "ABT", "DHR", "INTC", "NKE", "VZ", "QCOM",
-        "MDT", "NEE", "ACN", "AMGN", "LOW", "MS", "SBUX", "UPS", "RTX", "LIN",
-        "HON", "UNP", "INTU", "BA", "LMT", "CAT", "T", "ISRG", "PLD", "NOW",
-        "GILD", "SPGI", "BLK", "ELV", "BKNG", "ZTS", "MO", "DE", "CI", "C",
-        "SCHW", "MDLZ", "SO", "ADP", "SYK", "MMC", "PNC", "AXP", "ETN", "TJX",
-        "FDX", "APD", "REGN", "CL", "ADSK", "BSX", "EMR", "WBA", "HUM", "BIIB",
-        "ORCL", "GD", "CMCSA", "CSCO", "GM", "PYPL", "TGT", "EBAY", "BK", "COF"
-    ]
-
-    start_date = "2018-01-01"
-    end_date = "2025-10-31"
-
     all_data = []
 
-    for i, ticker in enumerate(tickers, 1):
-        print(f"⏳ Fetching {i}/{len(tickers)}: {ticker}")
-        df = fetch_stock_data(ticker, start_date, end_date)
+    for i, ticker in enumerate(TICKERS, 1):
+        print(f"⏳ Fetching {i}/{len(TICKERS)}: {ticker}")
+        df = fetch_stock_data(ticker, settings.start_date, settings.end_date)
         if not df.empty:
             all_data.append(df)
         time.sleep(1.2)  # prevent hitting rate limits
@@ -51,4 +40,3 @@ if __name__ == "__main__":
         print(combined_df.head())
     else:
         print("❌ No stock data collected.")
-
