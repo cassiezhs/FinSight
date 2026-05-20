@@ -34,7 +34,7 @@ from data_ingestiion.db import get_engine
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_ENABLED = os.getenv("OPENAI_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+OPENAI_ENABLED = os.getenv("OPENAI_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_ENABLED and OPENAI_API_KEY else None
 
 def sec_company_filing_search_url(cik, form_type, filing_date):
@@ -341,9 +341,9 @@ def kpi_tone(value):
 
 def sentiment_badge(text):
     score = local_sentiment_score(text)
-    label = sentiment_label(score)
+    label = narrative_sentiment_label(text)
     detail = f"Local score {score:+.3f}" if score is not None else "No local score"
-    tone = "positive" if label == "Positive" else "negative" if label == "Negative" else "neutral"
+    tone = narrative_tone(label)
     return label, detail, tone
 
 def kpi_item(label, value, detail="", tone="neutral"):
@@ -404,6 +404,170 @@ def build_dashboard_kpis(ticker, start_date, end_date):
         kpi_item("Risk Sentiment", risk_label, risk_detail, risk_tone),
     ])
 
+def first_valid(*values):
+    for value in values:
+        if value is not None and not pd.isna(value):
+            return value
+    return None
+
+def latest_10k_excess_return(ticker, start_date, end_date):
+    filings = load_10k_filings(engine, ticker, start_date, end_date)
+    if filings.empty:
+        return None
+
+    prices = load_price_window(engine, ticker, start_date, end_date)
+    sp500 = load_sp500_window(engine, start_date, end_date)
+    if prices.empty or sp500.empty:
+        return None
+
+    filing_date = pd.to_datetime(filings.iloc[0]["filing_date"])
+    horizons = []
+    for horizon in [5, 1, 30]:
+        stock_result = trading_return(prices, filing_date, horizon, "Close")
+        if stock_result is None:
+            horizons.append(None)
+            continue
+        sp500_result = trading_return(sp500, stock_result["anchor_date"], horizon, "close")
+        if sp500_result is None:
+            horizons.append(None)
+            continue
+        horizons.append(stock_result["return"] - sp500_result["return"])
+    return first_valid(*horizons)
+
+def stance_class(stance):
+    return {
+        "Constructive": "positive",
+        "Mixed": "neutral",
+        "Cautious": "cautious",
+        "Risk-Off": "negative",
+    }.get(stance, "neutral")
+
+def score_tone(label):
+    return {
+        "Bullish": 1.25,
+        "Expansion-Oriented": 1.0,
+        "Aggressive": 0.5,
+        "Defensive": -0.75,
+        "Cautious": -1.0,
+        "Risk-Elevated": -1.75,
+    }.get(label, 0)
+
+def build_market_readout(ticker, start_date, end_date):
+    if not ticker:
+        return html.Div("No ticker selected.", className="empty-state")
+    if not start_date or not end_date:
+        return html.Div("No date range selected.", className="empty-state")
+
+    prices = get_stock_data(engine, ticker, start_date, end_date)
+    range_return = None
+    volatility = None
+    if not prices.empty:
+        prices = prices.sort_values("Date")
+        first_close = float(prices.iloc[0]["Close"])
+        last_close = float(prices.iloc[-1]["Close"])
+        if first_close:
+            range_return = (last_close / first_close) - 1
+        returns = prices["Close"].pct_change().dropna()
+        if not returns.empty:
+            volatility = float(returns.std() * (252 ** 0.5))
+
+    start_year, end_year = get_year_bounds(start_date, end_date)
+    mdna_section = load_latest_section_for_years(engine, "mdna_sections", ticker, start_year, end_year)
+    risk_section = load_latest_section_for_years(engine, "risk_sections", ticker, start_year, end_year)
+    mdna_tone = narrative_sentiment_label(mdna_section["full_content"] if mdna_section is not None else "")
+    risk_tone = narrative_sentiment_label(risk_section["full_content"] if risk_section is not None else "")
+    ten_k_excess = latest_10k_excess_return(ticker, start_date, end_date)
+
+    eight_k_events = load_8k_events(engine, ticker, start_date, end_date)
+    high_impact_8k = 0
+    medium_impact_8k = 0
+    if eight_k_events is not None and not eight_k_events.empty:
+        for row in eight_k_events.itertuples(index=False):
+            item_descriptions = getattr(row, "item_descriptions", "") or getattr(row, "items", "")
+            detail_preview = getattr(row, "detail_preview", "")
+            _, impact_tone = eight_k_impact_label(item_descriptions, detail_preview)
+            high_impact_8k += 1 if impact_tone == "high" else 0
+            medium_impact_8k += 1 if impact_tone == "medium" else 0
+
+    score = 0
+    if range_return is not None:
+        score += 1.25 if range_return >= 0.08 else -1.25 if range_return <= -0.08 else 0.4 if range_return > 0 else -0.4
+    if ten_k_excess is not None:
+        score += 1.2 if ten_k_excess >= 0.02 else -1.2 if ten_k_excess <= -0.02 else 0
+    if volatility is not None:
+        score -= 0.8 if volatility >= 0.45 else 0.4 if volatility >= 0.32 else 0
+    score += score_tone(mdna_tone)
+    score += score_tone(risk_tone)
+    score -= min(high_impact_8k * 0.55, 1.1)
+
+    if score >= 1.75:
+        stance = "Constructive"
+    elif score >= -0.75:
+        stance = "Mixed"
+    elif score >= -2.25:
+        stance = "Cautious"
+    else:
+        stance = "Risk-Off"
+
+    driver = "Filing tone is the main signal."
+    if risk_tone == "Risk-Elevated":
+        driver = "Risk language is elevated in the selected filing period."
+    elif ten_k_excess is not None and ten_k_excess <= -0.02:
+        driver = "The latest 10-K reaction underperformed the S&P 500."
+    elif ten_k_excess is not None and ten_k_excess >= 0.02:
+        driver = "The latest 10-K reaction outperformed the S&P 500."
+    elif range_return is not None and abs(range_return) >= 0.08:
+        direction = "strong positive" if range_return > 0 else "weak"
+        driver = f"Stock performance was {direction} over the selected range."
+    elif high_impact_8k:
+        driver = f"{high_impact_8k} high-impact 8-K event{'s' if high_impact_8k != 1 else ''} appeared in the range."
+    elif mdna_tone in {"Bullish", "Expansion-Oriented"}:
+        driver = f"MD&A tone reads {mdna_tone.lower()}."
+
+    why = {
+        "Constructive": "Price action and filing language lean supportive, with no dominant risk signal overwhelming the readout.",
+        "Mixed": "Signals are not pointing in one clean direction, so the selected period needs confirmation from the next filing or market reaction.",
+        "Cautious": "Filing language or market reaction suggests investors should treat the period with more caution than the headline price alone implies.",
+        "Risk-Off": "Risk tone, market reaction, and/or event activity point to a materially defensive readout.",
+    }[stance]
+
+    if risk_tone in {"Risk-Elevated", "Cautious"}:
+        watch_next = "Watch whether the next 10-Q or earnings 8-K repeats the same risk language."
+    elif ten_k_excess is not None and abs(ten_k_excess) >= 0.02:
+        watch_next = "Watch whether the stock keeps confirming the filing reaction over the next trading window."
+    elif high_impact_8k or medium_impact_8k:
+        watch_next = "Open the latest 8-K details and check whether the event changes guidance, liquidity, or management tone."
+    else:
+        watch_next = "Watch the next filing for a clearer change in MD&A drivers or risk factors."
+
+    return html.Div(className="readout-grid", children=[
+        html.Div(className=f"readout-stance {stance_class(stance)}", children=[
+            html.Span("Overall stance"),
+            html.Strong(stance),
+            html.Em(f"Score {score:+.1f}")
+        ]),
+        html.Div(className="readout-copy", children=[
+            html.Div(className="readout-line", children=[
+                html.Span("Why it matters"),
+                html.P(why),
+            ]),
+            html.Div(className="readout-line", children=[
+                html.Span("Key driver"),
+                html.P(driver),
+            ]),
+            html.Div(className="readout-line", children=[
+                html.Span("Watch next"),
+                html.P(watch_next),
+            ]),
+        ]),
+        html.Div(className="readout-facts", children=[
+            html.Div([html.Span("Return"), html.Strong(format_pct(range_return))]),
+            html.Div([html.Span("10-K vs S&P"), html.Strong(format_pct(ten_k_excess))]),
+            html.Div([html.Span("Risk tone"), html.Strong(risk_tone)]),
+            html.Div([html.Span("8-K impact"), html.Strong(f"{high_impact_8k} high / {medium_impact_8k} medium")]),
+        ]),
+    ])
+
 def get_year_bounds(start_date, end_date):
     return pd.to_datetime(start_date).year, pd.to_datetime(end_date).year
 
@@ -460,14 +624,63 @@ def local_sentiment_score(text):
     except Exception:
         return None
 
-def sentiment_label(score):
+def keyword_hits(text, terms):
+    text = (text or "").lower()
+    return sum(1 for term in terms if term in text)
+
+def narrative_sentiment_label(text):
+    score = local_sentiment_score(text)
     if score is None:
         return "N/A"
-    if score >= 0.05:
-        return "Positive"
-    if score <= -0.05:
-        return "Negative"
-    return "Neutral"
+
+    risk_terms = [
+        "decline", "decrease", "adverse", "uncertain", "uncertainty", "volatility",
+        "litigation", "impairment", "material weakness", "cybersecurity", "regulatory",
+        "inflation", "interest rates", "supply chain", "competition", "risk",
+    ]
+    defensive_terms = [
+        "cost reduction", "restructuring", "efficiency", "liquidity", "preserve cash",
+        "mitigate", "offset", "headcount", "expenses", "controls",
+    ]
+    expansion_terms = [
+        "growth", "increase", "expanded", "expansion", "new products", "demand",
+        "revenue grew", "market share", "capacity", "international", "acquisition",
+    ]
+    aggressive_terms = [
+        "investment", "investments", "capital expenditures", "acquire", "acquisition",
+        "launch", "accelerate", "strategic initiative", "repurchase", "buyback",
+    ]
+    cautious_terms = [
+        "may", "could", "expect", "anticipate", "uncertain", "pressure", "headwinds",
+        "challenging", "slowdown", "macroeconomic",
+    ]
+
+    risk_count = keyword_hits(text, risk_terms)
+    defensive_count = keyword_hits(text, defensive_terms)
+    expansion_count = keyword_hits(text, expansion_terms)
+    aggressive_count = keyword_hits(text, aggressive_terms)
+    cautious_count = keyword_hits(text, cautious_terms)
+
+    if risk_count >= 4 or score <= -0.08:
+        return "Risk-Elevated"
+    if defensive_count >= 2:
+        return "Defensive"
+    if expansion_count >= 3 and score >= 0.04:
+        return "Expansion-Oriented"
+    if aggressive_count >= 3:
+        return "Aggressive"
+    if cautious_count >= 4 or score < -0.02:
+        return "Cautious"
+    if score >= 0.08:
+        return "Bullish"
+    return "Cautious"
+
+def narrative_tone(label):
+    if label in {"Bullish", "Expansion-Oriented", "Aggressive"}:
+        return "positive"
+    if label in {"Risk-Elevated", "Cautious"}:
+        return "negative"
+    return "neutral"
 
 def sentence_split(text):
     sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text or "").strip())
@@ -547,38 +760,75 @@ def format_section_display(filing_date, content, filing_url=None):
 
 @lru_cache(maxsize=256)
 def detect_sentiment(text):
-    prompt = f"Analyze this financial filing section and respond with one word only: Positive, Neutral, or Negative.\n\n{text[:3000]}"
+    prompt = f"""
+Classify this financial filing section using exactly one narrative label from this list:
+Bullish, Defensive, Cautious, Aggressive, Risk-Elevated, Expansion-Oriented.
+
+Use the label that best captures the management narrative, not generic text polarity.
+Respond with the label only.
+
+Filing excerpt:
+{text[:4000]}
+"""
     if not OPENAI_ENABLED:
-        return "Disabled"
+        return narrative_sentiment_label(text)
     if client is None:
-        return "Unavailable"
+        return narrative_sentiment_label(text)
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You are a financial analyst."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a financial analyst classifying filing narrative tone. "
+                        "Allowed labels only: Bullish, Defensive, Cautious, Aggressive, Risk-Elevated, Expansion-Oriented."
+                    )
+                },
                 {"role": "user", "content": prompt}
             ],
             temperature=0
         )
-        return response.choices[0].message.content.strip()
+        label = response.choices[0].message.content.strip()
+        allowed = {"Bullish", "Defensive", "Cautious", "Aggressive", "Risk-Elevated", "Expansion-Oriented"}
+        return label if label in allowed else narrative_sentiment_label(text)
     except Exception as e:
         return f"Error: {str(e)}"
 
 @lru_cache(maxsize=256)
-def summarize_mdna(text):
+def summarize_mdna(text, previous_text=""):
     if not OPENAI_ENABLED:
         return "OpenAI summaries are disabled."
     if client is None:
         return "OpenAI API key is not configured."
+    if previous_text:
+        user_prompt = f"""
+Current MD&A excerpt:
+{text[:6000]}
+
+Previous MD&A excerpt:
+{previous_text[:6000]}
+"""
+    else:
+        user_prompt = f"Current MD&A excerpt:\n{text[:6000]}"
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You are a financial analyst. Summarize the following MD&A in 3-4 bullet points."},
-                {"role": "user", "content": text[:3000]}
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an equity analyst writing a concise filing-change brief. "
+                        "Do not restate generic forward-looking statement language or boilerplate. "
+                        "Focus only on what is NEW, DIFFERENT, and IMPORTANT for investors. "
+                        "Return exactly 3 bullets. Each bullet must start with one of: New:, Different:, Important:. "
+                        "If prior-year text is provided, compare against it. If not, identify the most decision-relevant points in the current text. "
+                        "Be specific, plain-spoken, and avoid generic GPT-style summaries."
+                    )
+                },
+                {"role": "user", "content": user_prompt}
             ],
-            temperature=0.4
+            temperature=0.2
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -603,19 +853,39 @@ def load_risk_sections(ticker, engine, start_year, end_year):
     return df[['filing_date', 'cik', 'full_content']]
 
 @lru_cache(maxsize=256)
-def summarize_risk(text):
+def summarize_risk(text, previous_text=""):
     if not OPENAI_ENABLED:
         return "OpenAI summaries are disabled."
     if client is None:
         return "OpenAI API key is not configured."
+    if previous_text:
+        user_prompt = f"""
+Current Risk Factors excerpt:
+{text[:6000]}
+
+Previous Risk Factors excerpt:
+{previous_text[:6000]}
+"""
+    else:
+        user_prompt = f"Current Risk Factors excerpt:\n{text[:6000]}"
     try:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You are a financial analyst. Summarize the following risk factors in 3-4 bullet points."},
-                {"role": "user", "content": text[:3000]}
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an equity analyst writing a concise risk-change brief. "
+                        "Do not summarize standard legal boilerplate. "
+                        "Focus only on what is NEW, DIFFERENT, and IMPORTANT for investors. "
+                        "Return exactly 3 bullets. Each bullet must start with one of: New:, Different:, Important:. "
+                        "If prior-year text is provided, compare against it and call out newly emphasized, removed, or intensified risks. "
+                        "Be specific, plain-spoken, and avoid generic GPT-style summaries."
+                    )
+                },
+                {"role": "user", "content": user_prompt}
             ],
-            temperature=0.4
+            temperature=0.2
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -792,6 +1062,53 @@ def add_filing_markers(fig, price_df, events_df):
         ))
     return fig
 
+def compact_text(text, limit=150):
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+
+def eight_k_one_line_summary(item_descriptions, detail_preview, primary_doc_description):
+    preview = re.sub(r"\s+", " ", detail_preview or "").strip()
+    if preview and not preview.startswith("No extracted detail preview"):
+        sentence = re.split(r"(?<=[.!?])\s+", preview)[0]
+        return compact_text(sentence, 150)
+
+    item_text = item_descriptions or primary_doc_description or "8-K filing event"
+    return compact_text(f"Company filed an 8-K covering {item_text}.", 150)
+
+def eight_k_impact_label(item_descriptions, detail_preview):
+    text = f"{item_descriptions or ''} {detail_preview or ''}".lower()
+    high_terms = [
+        "bankruptcy",
+        "delisting",
+        "departure of directors",
+        "appointment of certain officers",
+        "material definitive agreement",
+        "termination of a material definitive agreement",
+        "cybersecurity incident",
+        "change in control",
+        "non-reliance",
+    ]
+    medium_terms = [
+        "results of operations",
+        "financial condition",
+        "regulation fd",
+        "other events",
+        "financial statements",
+        "exhibits",
+        "acquisition",
+        "disposition",
+    ]
+
+    if any(term in text for term in high_terms):
+        return "High impact", "high"
+    if any(term in text for term in medium_terms):
+        return "Medium impact", "medium"
+    return "Low impact", "low"
+
 def format_8k_events(events_df):
     if events_df is None or events_df.empty:
         return html.Div("No 8-K events found for this ticker and date range.", className="empty-state")
@@ -802,7 +1119,10 @@ def format_8k_events(events_df):
         item_descriptions = getattr(row, "item_descriptions", "") or getattr(row, "items", "") or "No item description available."
         detail_preview = getattr(row, "detail_preview", "") or "No extracted detail preview is stored yet. Re-run ingestion with FINSIGHT_LOAD_8K=1 and FINSIGHT_LOAD_8K_DETAILS=1 to populate this event."
         detail_sources = getattr(row, "detail_sources", "") or getattr(row, "primary_doc_description", "") or "SEC filing"
+        primary_doc_description = getattr(row, "primary_doc_description", "") or ""
         filing_url = getattr(row, "filing_url", "")
+        one_line_summary = eight_k_one_line_summary(item_descriptions, detail_preview, primary_doc_description)
+        impact_label, impact_tone = eight_k_impact_label(item_descriptions, detail_preview)
 
         cards.append(html.Div(className="event-item", children=[
             html.Div(className="event-item-head", children=[
@@ -810,11 +1130,16 @@ def format_8k_events(events_df):
                     html.Span("8-K", className="event-type"),
                     html.Strong(filing_date),
                 ]),
+                html.Span(impact_label, className=f"impact-label {impact_tone}"),
+            ]),
+            html.P(one_line_summary, className="event-summary"),
+            html.Details(className="event-details", children=[
+                html.Summary("Details"),
+                html.Div(item_descriptions, className="event-items"),
+                html.P(detail_preview, className="event-preview"),
+                html.Div(f"Sources: {detail_sources}", className="event-source"),
                 html.A("SEC filing", href=filing_url, target="_blank", className="event-link") if filing_url else None,
             ]),
-            html.Div(item_descriptions, className="event-items"),
-            html.P(detail_preview, className="event-preview"),
-            html.Div(f"Sources: {detail_sources}", className="event-source"),
         ]))
 
     return html.Div(cards, className="event-list")
@@ -874,8 +1199,8 @@ def build_section_comparison(name, current_row, previous_row, include_language=T
         metric_tile("Words", f"{metrics['word_count']:,}", format_delta(metrics["word_delta"])),
         metric_tile("Readability", metrics["readability"] if metrics["readability"] is not None else "N/A", format_delta(metrics["readability_delta"])),
         metric_tile(
-            "Local sentiment",
-            sentiment_label(metrics["sentiment"]),
+            "Narrative tone",
+            narrative_sentiment_label(current_text),
             format_delta(metrics["sentiment_delta"]),
         ),
     ])
@@ -936,19 +1261,13 @@ app.layout = html.Div(className="page-shell", children=[
             html.Div("F", className="brand-mark"),
             html.Span("FinSight")
         ]),
-        html.Div(className="nav-links", children=[
-            html.Span("Overview", className="active"),
-            html.Span("Filings"),
-            html.Span("Signals"),
-            html.Span("Reports")
-        ]),
         html.Div(className="topbar-action", children="Market intelligence")
     ]),
 
     html.Div(className="hero-card", children=[
         html.Div(className="hero-meta", children=[
             html.Span("Market pulse", className="eyebrow"),
-            html.H1("Stock Price Viewer"),
+            html.H1("Narrative vs. Market: Analyzing 10-K Filings and Stock Price Alignment"),
             html.P("Price action, filing language, risk signals, and AI summaries aligned to the selected period.")
         ]),
         html.Div(className="hero-highlight", children=[
@@ -979,6 +1298,22 @@ app.layout = html.Div(className="page-shell", children=[
         ])
     ]),
 
+    html.Div(className="card readout-card", children=[
+        html.Div(className="card-head", children=[
+            html.Div([
+                html.Span("Final insight"),
+                html.H3("Market Readout"),
+                html.P("Combines price action, filing tone, 10-K reaction, and 8-K event impact into one investor-facing view.", className="card-note")
+            ])
+        ]),
+        dcc.Loading(
+            type="circle",
+            color="#7201FF",
+            className="loading-shell",
+            children=html.Div(id="market-readout")
+        )
+    ]),
+
     html.Div(className="grid charts", children=[
         html.Div(className="card chart-card", children=[
             html.Div(className="card-head", children=[
@@ -999,6 +1334,22 @@ app.layout = html.Div(className="page-shell", children=[
             ]),
             dcc.Graph(id='volume-graph')
         ])
+    ]),
+
+    html.Div(className="card comparison-card", children=[
+        html.Div(className="card-head", children=[
+            html.Div([
+                html.Span("Year over year"),
+                html.H3("Filing Comparison"),
+                html.P("Compares the selected filing against the previous available filing using local text analytics.", className="card-note")
+            ])
+        ]),
+        dcc.Loading(
+            type="circle",
+            color="#7201FF",
+            className="loading-shell",
+            children=html.Div(id='filing-comparison')
+        )
     ]),
 
     html.Div(className="card events-card", children=[
@@ -1032,21 +1383,12 @@ app.layout = html.Div(className="page-shell", children=[
         )
     ]),
 
-    html.Div(className="card comparison-card", children=[
-        html.Div(className="card-head", children=[
-            html.Div([
-                html.Span("Year over year"),
-                html.H3("Filing Comparison"),
-                html.P("Compares the selected filing against the previous available filing using local text analytics.", className="card-note")
-            ])
-        ]),
-        dcc.Loading(
-            type="circle",
-            color="#7201FF",
-            className="loading-shell",
-            children=html.Div(id='filing-comparison')
-        )
-    ]),
+    dcc.Loading(
+        type="dot",
+        color="#8FFE01",
+        className="loading-shell compact sentiment-row",
+        children=html.Div(id='sentiment-tag', className="sentiment-tag")
+    ),
 
     html.Div(className="grid info", children=[
         html.Div(className="stack", children=[
@@ -1076,16 +1418,10 @@ app.layout = html.Div(className="page-shell", children=[
             ])
         ]),
         html.Div(className="stack", children=[
-            dcc.Loading(
-                type="dot",
-                color="#8FFE01",
-                className="loading-shell compact",
-                children=html.Div(id='sentiment-tag', className="sentiment-tag")
-            ),
             html.Div(className="card summary-card", children=[
                 html.Div(className="card-head", children=[
                     html.Span("AI digest"),
-                    html.H3("Summary of MD&A")
+                    html.H3("MD&A: What Changed")
                 ]),
                 dcc.Loading(
                     type="circle",
@@ -1097,7 +1433,7 @@ app.layout = html.Div(className="page-shell", children=[
             html.Div(className="card summary-card", children=[
                 html.Div(className="card-head", children=[
                     html.Span("AI digest"),
-                    html.H3("Summary of Risk Sections")
+                    html.H3("Risk: What Changed")
                 ]),
                 dcc.Loading(
                     type="circle",
@@ -1118,6 +1454,16 @@ app.layout = html.Div(className="page-shell", children=[
 )
 def update_dashboard_kpis(ticker, start_date, end_date):
     return build_dashboard_kpis(ticker, start_date, end_date)
+
+
+@app.callback(
+    Output('market-readout', 'children'),
+    Input('ticker-dropdown', 'value'),
+    Input('date-range', 'start_date'),
+    Input('date-range', 'end_date')
+)
+def update_market_readout(ticker, start_date, end_date):
+    return build_market_readout(ticker, start_date, end_date)
 
 
 @app.callback(
@@ -1228,9 +1574,11 @@ def update_mdna(ticker, start_date, end_date):
     if mdna_df is not None and not mdna_df.empty:
         mdna_row = mdna_df.iloc[0]
         mdna_text = mdna_row['full_content'][:5000]
+        previous_mdna = load_previous_section(engine, "mdna_sections", ticker, mdna_row["filing_date"])
+        previous_mdna_text = previous_mdna["full_content"] if previous_mdna is not None else ""
         mdna_url = sec_company_filing_search_url(mdna_row['cik'], "10-K", mdna_row['filing_date'])
         mdna_display = format_section_display(mdna_row['filing_date'], mdna_text, mdna_url)
-        mdna_summary = summarize_mdna(mdna_text)
+        mdna_summary = summarize_mdna(mdna_row["full_content"], previous_mdna_text)
         mdna_sentiment = detect_sentiment(mdna_text)
 
     risk_text = f"No risk filing found for {ticker} in filing year {year_label}."
@@ -1241,9 +1589,11 @@ def update_mdna(ticker, start_date, end_date):
     if risk_df is not None and not risk_df.empty:
         risk_row = risk_df.iloc[0]
         risk_text = risk_row['full_content'][:5000]
+        previous_risk = load_previous_section(engine, "risk_sections", ticker, risk_row["filing_date"])
+        previous_risk_text = previous_risk["full_content"] if previous_risk is not None else ""
         risk_url = sec_company_filing_search_url(risk_row['cik'], "10-K", risk_row['filing_date'])
         risk_display = format_section_display(risk_row['filing_date'], risk_text, risk_url)
-        risk_summary = summarize_risk(risk_text)
+        risk_summary = summarize_risk(risk_row["full_content"], previous_risk_text)
         risk_sentiment = detect_sentiment(risk_text)
 
     sentiment_badge = f"Sentiment - MD&A: {mdna_sentiment} | Risk: {risk_sentiment}"
