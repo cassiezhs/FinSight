@@ -13,6 +13,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Show files
+        run: |
+          pwd
+          find . -maxdepth 4 -type f | sort
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -35,4 +40,4 @@ jobs:
           FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS }}
           FINSIGHT_DAILY_LOAD_8K: "1"
           FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
-        run: python FinSight/data_ingestiion/daily_refresh.py
+        run: python data_ingestiion/daily_refresh.py
