@@ -40,4 +40,4 @@ jobs:
           FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS }}
           FINSIGHT_DAILY_LOAD_8K: "1"
           FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
-        run: python data_ingestiion/daily_refresh.py
+        run: python FinSight/data_ingestiion/daily_refresh.py
