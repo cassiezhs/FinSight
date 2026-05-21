@@ -5,7 +5,7 @@ from functools import lru_cache
 from urllib.parse import urlencode
 
 import pandas as pd
-from dash import Dash, dcc, html, Input, Output
+from dash import Dash, dcc, html, Input, Output, ctx
 import plotly.express as px
 import plotly.graph_objects as go
 from dotenv import load_dotenv
@@ -452,6 +452,108 @@ def score_tone(label):
         "Risk-Elevated": -1.75,
     }.get(label, 0)
 
+def tone_direction(label):
+    if label in {"Bullish", "Expansion-Oriented", "Aggressive"}:
+        return 1
+    if label in {"Defensive", "Cautious", "Risk-Elevated"}:
+        return -1
+    return 0
+
+def tone_change_label(current_label, previous_label):
+    current_score = score_tone(current_label)
+    previous_score = score_tone(previous_label)
+    if current_label == "N/A" or previous_label == "N/A":
+        return "N/A"
+    delta = current_score - previous_score
+    if delta >= 0.75:
+        return "More constructive"
+    if delta <= -0.75:
+        return "More cautious"
+    return "Stable"
+
+def alignment_class(label):
+    return {
+        "Aligned": "positive",
+        "Narrative ahead of market": "ahead",
+        "Market skeptical": "skeptical",
+        "Risk confirmed": "negative",
+    }.get(label, "neutral")
+
+def build_alignment_signal(mdna_section, risk_section, ticker, start_date, end_date, ten_k_excess):
+    if mdna_section is None or risk_section is None:
+        return None
+
+    previous_mdna = load_previous_section(engine, "mdna_sections", ticker, mdna_section["filing_date"])
+    previous_risk = load_previous_section(engine, "risk_sections", ticker, risk_section["filing_date"])
+    if previous_mdna is None or previous_risk is None:
+        return None
+
+    mdna_metrics = section_metrics(mdna_section["full_content"], previous_mdna["full_content"])
+    risk_added, _ = sentence_changes(risk_section["full_content"], previous_risk["full_content"], limit=20)
+    current_mdna_tone = narrative_sentiment_label(mdna_section["full_content"])
+    previous_mdna_tone = narrative_sentiment_label(previous_mdna["full_content"])
+    current_risk_tone = narrative_sentiment_label(risk_section["full_content"])
+    reaction = reaction_label(ten_k_excess)
+    sentiment_shift = mdna_metrics["sentiment_delta"]
+    tone_shift = tone_change_label(current_mdna_tone, previous_mdna_tone)
+    risk_pressure = len(risk_added) >= 3 or current_risk_tone == "Risk-Elevated"
+    narrative_direction = tone_direction(current_mdna_tone)
+    market_direction = 1 if ten_k_excess is not None and ten_k_excess >= 0.01 else -1 if ten_k_excess is not None and ten_k_excess <= -0.01 else 0
+
+    if risk_pressure and market_direction < 0:
+        output = "Risk confirmed"
+        why = "New risk language and a negative post-10-K excess return point in the same direction."
+    elif narrative_direction > 0 and market_direction < 0:
+        output = "Market skeptical"
+        why = "The filing narrative reads constructive, but the market reaction lagged the S&P 500."
+    elif narrative_direction < 0 and market_direction > 0:
+        output = "Narrative ahead of market"
+        why = "The filing language is cautious while the market reaction has not confirmed that caution."
+    elif market_direction and narrative_direction == market_direction:
+        output = "Aligned"
+        why = "Filing tone and post-10-K market reaction move in the same direction."
+    elif risk_pressure:
+        output = "Narrative ahead of market"
+        why = "Risk language changed before a decisive market reaction appeared."
+    else:
+        output = "Aligned"
+        why = "No strong narrative-market divergence is visible in the selected filing window."
+
+    return {
+        "output": output,
+        "why": why,
+        "class": alignment_class(output),
+        "tone_change": tone_shift,
+        "new_risk_count": len(risk_added),
+        "excess_return": ten_k_excess,
+        "sentiment_shift": sentiment_shift,
+        "reaction": reaction,
+    }
+
+def build_alignment_panel(alignment, range_return, risk_tone, high_impact_8k, medium_impact_8k):
+    if alignment is None:
+        return html.Div(className="readout-facts", children=[
+            html.Div([html.Span("Return"), html.Strong(format_pct(range_return))]),
+            html.Div([html.Span("Risk tone"), html.Strong(risk_tone)]),
+            html.Div([html.Span("8-K impact"), html.Strong(f"{high_impact_8k} high / {medium_impact_8k} medium")]),
+            html.Div([html.Span("Alignment"), html.Strong("Needs prior 10-K")]),
+        ])
+
+    return html.Div(className="alignment-panel", children=[
+        html.Div(className=f"alignment-head {alignment['class']}", children=[
+            html.Span("Narrative vs Market Alignment"),
+            html.Strong(alignment["output"]),
+            html.P(alignment["why"]),
+        ]),
+        html.Div(className="alignment-factors", children=[
+            html.Div([html.Span("Filing tone change"), html.Strong(alignment["tone_change"])]),
+            html.Div([html.Span("New risk language"), html.Strong(str(alignment["new_risk_count"]))]),
+            html.Div([html.Span("10-K excess return"), html.Strong(format_pct(alignment["excess_return"]))]),
+            html.Div([html.Span("Sentiment shift"), html.Strong(format_delta(alignment["sentiment_shift"]))]),
+            html.Div([html.Span("Market reaction"), html.Strong(alignment["reaction"])]),
+        ]),
+    ])
+
 def build_market_readout(ticker, start_date, end_date):
     if not ticker:
         return html.Div("No ticker selected.", className="empty-state")
@@ -477,6 +579,7 @@ def build_market_readout(ticker, start_date, end_date):
     mdna_tone = narrative_sentiment_label(mdna_section["full_content"] if mdna_section is not None else "")
     risk_tone = narrative_sentiment_label(risk_section["full_content"] if risk_section is not None else "")
     ten_k_excess = latest_10k_excess_return(ticker, start_date, end_date)
+    alignment = build_alignment_signal(mdna_section, risk_section, ticker, start_date, end_date, ten_k_excess)
 
     eight_k_events = load_8k_events(engine, ticker, start_date, end_date)
     high_impact_8k = 0
@@ -560,16 +663,31 @@ def build_market_readout(ticker, start_date, end_date):
                 html.P(watch_next),
             ]),
         ]),
-        html.Div(className="readout-facts", children=[
-            html.Div([html.Span("Return"), html.Strong(format_pct(range_return))]),
-            html.Div([html.Span("10-K vs S&P"), html.Strong(format_pct(ten_k_excess))]),
-            html.Div([html.Span("Risk tone"), html.Strong(risk_tone)]),
-            html.Div([html.Span("8-K impact"), html.Strong(f"{high_impact_8k} high / {medium_impact_8k} medium")]),
-        ]),
+        build_alignment_panel(alignment, range_return, risk_tone, high_impact_8k, medium_impact_8k),
     ])
 
 def get_year_bounds(start_date, end_date):
     return pd.to_datetime(start_date).year, pd.to_datetime(end_date).year
+
+def preset_date_range(preset_id):
+    coverage_start = pd.Timestamp(default_start_date)
+    coverage_end = pd.Timestamp(default_end_date)
+
+    if preset_id == "range-all":
+        start_date = coverage_start
+    elif preset_id == "range-ytd":
+        start_date = coverage_end.replace(month=1, day=1)
+    else:
+        years = {
+            "range-1y": 1,
+            "range-3y": 3,
+            "range-5y": 5,
+        }.get(preset_id)
+        if years is None:
+            return default_start_date, default_end_date
+        start_date = coverage_end - pd.DateOffset(years=years)
+
+    return max(start_date, coverage_start).date().isoformat(), coverage_end.date().isoformat()
 
 def load_latest_section_for_years(engine, table_name, ticker, start_year, end_year):
     if table_name not in {"mdna_sections", "risk_sections"}:
@@ -905,9 +1023,10 @@ Previous filing date: {previous_date}
 Current filing date: {current_date}
 
 Focus on what changed, not a generic summary. Return:
-- 3-5 bullet points on substantive changes
-- any newly emphasized risks, strategy shifts, performance drivers, or uncertainty
-- whether the tone became more positive, negative, or cautious
+- exactly 2 bullets
+- each bullet must be one short sentence under 18 words
+- only the most decision-relevant change and the most important risk/driver shift
+- no filing boilerplate, no section recap, no preamble, no conclusion
 
 Previous {section_name} excerpt:
 {previous_text[:6000]}
@@ -919,7 +1038,13 @@ Current {section_name} excerpt:
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You are a financial analyst comparing SEC filing language year over year."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a financial analyst comparing SEC filing language year over year. "
+                        "Write terse scan-friendly bullets for a dashboard."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
@@ -1293,9 +1418,23 @@ app.layout = html.Div(className="page-shell", children=[
                 max_date_allowed=default_end_date,
                 start_date=default_start_date,
                 end_date=default_end_date,
+                initial_visible_month=default_end_date,
+                number_of_months_shown=2,
+                display_format="YYYY-MM-DD",
+                month_format="MMM YYYY",
                 with_portal=True,
                 className="control"
             )
+        ]),
+        html.Div(className="field range-preset-field", children=[
+            html.Label("Quick Ranges"),
+            html.Div(className="range-presets", children=[
+                html.Button("YTD", id="range-ytd", n_clicks=0, title="Year to date"),
+                html.Button("1Y", id="range-1y", n_clicks=0, title="Latest year"),
+                html.Button("3Y", id="range-3y", n_clicks=0, title="Latest three years"),
+                html.Button("5Y", id="range-5y", n_clicks=0, title="Latest five years"),
+                html.Button("All", id="range-all", n_clicks=0, title="All available data"),
+            ])
         ])
     ]),
 
@@ -1446,6 +1585,20 @@ app.layout = html.Div(className="page-shell", children=[
         ])
     ])
 ])
+
+@app.callback(
+    Output('date-range', 'start_date'),
+    Output('date-range', 'end_date'),
+    Input('range-ytd', 'n_clicks'),
+    Input('range-1y', 'n_clicks'),
+    Input('range-3y', 'n_clicks'),
+    Input('range-5y', 'n_clicks'),
+    Input('range-all', 'n_clicks'),
+    prevent_initial_call=True,
+)
+def apply_date_preset(ytd_clicks, one_year_clicks, three_year_clicks, five_year_clicks, all_clicks):
+    return preset_date_range(ctx.triggered_id)
+
 
 @app.callback(
     Output('kpi-row', 'children'),

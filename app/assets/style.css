@@ -176,7 +176,7 @@ body {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-columns: minmax(240px, 0.55fr) minmax(340px, 1fr);
+  grid-template-columns: minmax(220px, 0.42fr) minmax(340px, 0.8fr) minmax(270px, 0.58fr);
   gap: 16px;
   align-items: end;
   padding: 16px;
@@ -290,6 +290,84 @@ body {
   overflow-wrap: anywhere;
 }
 
+.alignment-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.alignment-head {
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.alignment-head span,
+.alignment-factors span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.alignment-head strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1.02;
+  font-weight: 850;
+  letter-spacing: 0;
+}
+
+.alignment-head p {
+  margin: 8px 0 0;
+  color: #1d1b22;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 800;
+}
+
+.alignment-head.positive {
+  background: linear-gradient(180deg, rgba(143, 254, 1, 0.34), rgba(255, 255, 255, 0.82));
+}
+
+.alignment-head.ahead {
+  background: linear-gradient(180deg, rgba(143, 254, 1, 0.22), rgba(114, 1, 255, 0.14), rgba(255, 255, 255, 0.82));
+}
+
+.alignment-head.skeptical {
+  background: linear-gradient(180deg, rgba(114, 1, 255, 0.2), rgba(255, 255, 255, 0.84));
+}
+
+.alignment-head.negative {
+  background: linear-gradient(180deg, rgba(180, 35, 24, 0.2), rgba(255, 255, 255, 0.84));
+}
+
+.alignment-factors {
+  display: grid;
+  gap: 8px;
+}
+
+.alignment-factors div {
+  min-height: 50px;
+  padding: 9px 11px;
+  display: grid;
+  gap: 5px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.alignment-factors strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.2;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
 .kpi-shell {
   min-height: 210px;
 }
@@ -348,6 +426,41 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
+}
+
+.range-presets {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(44px, 1fr));
+  align-items: center;
+  gap: 7px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.range-presets button {
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.range-presets button:hover,
+.range-presets button:focus-visible {
+  border-color: var(--line);
+  background: rgba(114, 1, 255, 0.12);
+  outline: none;
+}
+
+.range-presets button:active {
+  background: #000;
+  color: #fff;
 }
 
 label {
@@ -867,10 +980,12 @@ label {
 }
 
 .ai-change-body {
+  max-height: 108px;
+  overflow-y: auto;
   white-space: pre-wrap;
   color: #1d1b22;
   font-size: 13px;
-  line-height: 1.62;
+  line-height: 1.48;
   font-weight: 700;
 }
 
