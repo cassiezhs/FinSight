@@ -1254,6 +1254,7 @@ default_start_date, default_end_date = get_stock_date_bounds(engine)
 assets_path = os.path.join(os.path.dirname(__file__), "assets")
 app = Dash(__name__, external_stylesheets=[dbc.themes.ZEPHYR], assets_folder=assets_path)
 app.title = "FinSight Dashboard"
+server = app.server
 
 app.layout = html.Div(className="page-shell", children=[
     html.Div(className="topbar", children=[
