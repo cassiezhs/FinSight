@@ -31,14 +31,14 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          FINSIGHT_START_DATE: ${{ vars.FINSIGHT_START_DATE }}
-          FINSIGHT_END_DATE: ${{ vars.FINSIGHT_END_DATE }}
-          FINSIGHT_DAILY_REFRESH_DAYS: ${{ vars.FINSIGHT_DAILY_REFRESH_DAYS }}
-          FINSIGHT_START_YEAR: ${{ vars.FINSIGHT_START_YEAR }}
-          FINSIGHT_END_YEAR: ${{ vars.FINSIGHT_END_YEAR }}
-          FINSIGHT_TICKERS: ${{ vars.FINSIGHT_TICKERS }}
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || 'FinSight/0.1 contact@example.com' }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+          FINSIGHT_START_DATE: ${{ vars.FINSIGHT_START_DATE || '2018-01-01' }}
+          FINSIGHT_END_DATE: ${{ vars.FINSIGHT_END_DATE || 'today' }}
+          FINSIGHT_DAILY_REFRESH_DAYS: ${{ vars.FINSIGHT_DAILY_REFRESH_DAYS || '10' }}
+          FINSIGHT_START_YEAR: ${{ vars.FINSIGHT_START_YEAR || '2018' }}
+          FINSIGHT_END_YEAR: ${{ vars.FINSIGHT_END_YEAR || '2026' }}
+          FINSIGHT_TICKERS: ${{ vars.FINSIGHT_TICKERS || 'AAPL,MSFT,NVDA' }}
 
           FINSIGHT_DAILY_LOAD_8K: "1"
           FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
