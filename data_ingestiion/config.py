@@ -90,7 +90,7 @@ class Settings:
 def normalize_sqlalchemy_postgres_url(url: str) -> str:
     """Accept plain Postgres URLs from providers and make them SQLAlchemy-ready."""
     parts = urlsplit(url)
-    if parts.scheme in {"postgres", "postgresql"}:
+    if parts.scheme in {"postgres", "postgresql", "ostgresql"}:
         return urlunsplit(("postgresql+psycopg2", parts.netloc, parts.path, parts.query, parts.fragment))
     return url
 
