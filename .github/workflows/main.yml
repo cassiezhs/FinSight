@@ -1,0 +1,38 @@
+name: Daily FinSight Data Refresh
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily refresh
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          FINSIGHT_START_DATE: ${{ secrets.FINSIGHT_START_DATE }}
+          FINSIGHT_END_DATE: ${{ secrets.FINSIGHT_END_DATE }}
+          FINSIGHT_DAILY_REFRESH_DAYS: ${{ secrets.FINSIGHT_DAILY_REFRESH_DAYS }}
+          FINSIGHT_START_YEAR: ${{ secrets.FINSIGHT_START_YEAR }}
+          FINSIGHT_END_YEAR: ${{ secrets.FINSIGHT_END_YEAR }}
+          FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS }}
+          FINSIGHT_DAILY_LOAD_8K: "1"
+          FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
+        run: python daily_refresh.py
