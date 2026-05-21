@@ -13,6 +13,7 @@ env/
 
 outputs/
 *.log
+*.sql
 model_results_summary*.json
 model_scatter.html
 merged_10k_price_dataset.csv
