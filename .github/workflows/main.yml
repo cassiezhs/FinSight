@@ -30,14 +30,16 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-          FINSIGHT_START_DATE: ${{ secrets.FINSIGHT_START_DATE }}
-          FINSIGHT_END_DATE: ${{ secrets.FINSIGHT_END_DATE }}
-          FINSIGHT_DAILY_REFRESH_DAYS: ${{ secrets.FINSIGHT_DAILY_REFRESH_DAYS }}
-          FINSIGHT_START_YEAR: ${{ secrets.FINSIGHT_START_YEAR }}
-          FINSIGHT_END_YEAR: ${{ secrets.FINSIGHT_END_YEAR }}
-          FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS }}
+
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          FINSIGHT_START_DATE: ${{ vars.FINSIGHT_START_DATE }}
+          FINSIGHT_END_DATE: ${{ vars.FINSIGHT_END_DATE }}
+          FINSIGHT_DAILY_REFRESH_DAYS: ${{ vars.FINSIGHT_DAILY_REFRESH_DAYS }}
+          FINSIGHT_START_YEAR: ${{ vars.FINSIGHT_START_YEAR }}
+          FINSIGHT_END_YEAR: ${{ vars.FINSIGHT_END_YEAR }}
+          FINSIGHT_TICKERS: ${{ vars.FINSIGHT_TICKERS }}
+
           FINSIGHT_DAILY_LOAD_8K: "1"
           FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
         run: python data_ingestiion/daily_refresh.py
