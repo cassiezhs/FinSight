@@ -81,6 +81,20 @@ Run the lightweight daily updater. It re-fetches the last 10 days by default and
 python3 data_ingestiion/load_to_db.py --daily
 ```
 
+For schedulers such as GitHub Actions, use the dedicated daily entrypoint:
+
+```bash
+python3 -m data_ingestiion.daily_refresh
+```
+
+That command refreshes stock prices and the S&P 500 rolling window. Add SEC filing refreshes explicitly when the scheduled job should include them:
+
+```bash
+python3 -m data_ingestiion.daily_refresh --with-8k --with-10k-sections
+```
+
+The daily job reads `DATABASE_URL`, `SEC_USER_AGENT`, `FINSIGHT_TICKERS`, `FINSIGHT_DAILY_REFRESH_DAYS`, and optional SEC flags from the environment. Store secrets such as `DATABASE_URL` in GitHub Actions secrets, not in the repo.
+
 Schedule it with cron, usually after the US market close:
 
 ```cron
