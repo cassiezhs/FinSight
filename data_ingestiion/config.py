@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, timedelta
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -39,12 +40,14 @@ def next_date(value: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    database_url_env: str | None = os.getenv("DATABASE_URL")
     db_user: str | None = os.getenv("DB_USER")
     db_password: str | None = os.getenv("DB_PASSWORD")
     db_host: str | None = os.getenv("DB_HOST")
     db_port: str = os.getenv("DB_PORT", "5432")
     db_name: str | None = os.getenv("DB_NAME")
     db_schema: str = os.getenv("DB_SCHEMA", "public")
+    db_sslmode: str | None = os.getenv("DB_SSLMODE")
     sec_user_agent: str = os.getenv("SEC_USER_AGENT", "FinSight/0.1 contact@example.com")
     start_date: str = os.getenv("FINSIGHT_START_DATE", "2018-01-01")
     end_date: str = os.getenv("FINSIGHT_END_DATE", "today")
@@ -61,6 +64,9 @@ class Settings:
 
     @property
     def database_url(self) -> str:
+        if self.database_url_env:
+            return normalize_sqlalchemy_postgres_url(self.database_url_env)
+
         missing = [
             name for name, value in {
                 "DB_USER": self.db_user,
@@ -72,10 +78,21 @@ class Settings:
         ]
         if missing:
             raise RuntimeError(f"Missing DB env vars: {', '.join(missing)}")
-        return (
+        url = (
             f"postgresql+psycopg2://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
+        if self.db_sslmode:
+            url = f"{url}?sslmode={self.db_sslmode}"
+        return url
+
+
+def normalize_sqlalchemy_postgres_url(url: str) -> str:
+    """Accept plain Postgres URLs from providers and make them SQLAlchemy-ready."""
+    parts = urlsplit(url)
+    if parts.scheme in {"postgres", "postgresql"}:
+        return urlunsplit(("postgresql+psycopg2", parts.netloc, parts.path, parts.query, parts.fragment))
+    return url
 
 
 def parse_tickers(value: str | None = None) -> tuple[str, ...]:

@@ -1267,8 +1267,8 @@ app.layout = html.Div(className="page-shell", children=[
     html.Div(className="hero-card", children=[
         html.Div(className="hero-meta", children=[
             html.Span("Market pulse", className="eyebrow"),
-            html.H1("Narrative vs. Market: Analyzing 10-K Filings and Stock Price Alignment"),
-            html.P("Price action, filing language, risk signals, and AI summaries aligned to the selected period.")
+            html.H1("Narrative vs. Market"),
+            html.P("Analyzing how 10-K filing language aligns with stock price movement, market reaction, and risk signals.")
         ]),
         html.Div(className="hero-highlight", children=[
             dcc.Loading(
