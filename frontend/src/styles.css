@@ -1,0 +1,129 @@
+button,
+input,
+select {
+  font: inherit;
+}
+
+select,
+.native-range input {
+  min-height: 48px;
+  width: 100%;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.84);
+  font-weight: 700;
+}
+
+select {
+  appearance: auto;
+}
+
+.native-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.field > label,
+label.field {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.range-presets button {
+  cursor: pointer;
+}
+
+.react-loading {
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.react-loading i {
+  width: 26px;
+  height: 26px;
+  border: 2px solid rgba(114, 1, 255, 0.18);
+  border-top-color: var(--purple);
+  border-radius: 50%;
+  animation: react-spin 700ms linear infinite;
+}
+
+.loading-card {
+  min-height: 180px;
+}
+
+.react-plot {
+  height: 350px;
+}
+
+.chart-card .js-plotly-plot,
+.chart-card .plot-container {
+  height: 100%;
+}
+
+.filing-text,
+.summary-box {
+  max-height: 420px;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  color: #1d1b22;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.summary-box {
+  max-height: 260px;
+  font-weight: 750;
+}
+
+.filing-date {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.comparison-section > .language-list + .language-list {
+  margin-top: 12px;
+}
+
+.empty-state {
+  min-height: 90px;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  border: 1px dashed rgba(5, 5, 5, 0.14);
+  border-radius: 16px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.48);
+  font-weight: 800;
+}
+
+@keyframes react-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .native-range {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-loading i {
+    animation: none;
+  }
+}

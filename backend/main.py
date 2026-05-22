@@ -1,0 +1,64 @@
+"""FastAPI application for FinSight."""
+
+from __future__ import annotations
+
+import os
+from datetime import date
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from backend.dashboard_service import build_dashboard, get_bootstrap
+
+
+app = FastAPI(title="FinSight API", version="1.0.0")
+origins = [origin.strip() for origin in os.getenv("FINSIGHT_CORS_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=False,
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/bootstrap")
+def bootstrap():
+    try:
+        return get_bootstrap()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Bootstrap query failed: {exc}") from exc
+
+
+@app.get("/api/dashboard")
+def dashboard(
+    ticker: str = Query(min_length=1, max_length=16),
+    start: date = Query(),
+    end: date = Query(),
+):
+    if start > end:
+        raise HTTPException(status_code=422, detail="start must be on or before end")
+    try:
+        return build_dashboard(ticker.upper(), start.isoformat(), end.isoformat())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Dashboard query failed: {exc}") from exc
+
+
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+if FRONTEND_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def frontend(path: str):
+        requested = FRONTEND_DIST / path
+        if path and requested.exists() and requested.is_file():
+            return FileResponse(requested)
+        return FileResponse(FRONTEND_DIST / "index.html")

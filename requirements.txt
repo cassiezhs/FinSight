@@ -1,7 +1,5 @@
 beautifulsoup4>=4.12,<5
-dash>=2.17,<4
-dash-bootstrap-components>=1.6,<3
-gunicorn>=22,<24
+fastapi>=0.115,<1
 matplotlib>=3.8,<4
 numpy>=1.26,<3
 openai>=1.40,<2
@@ -17,4 +15,5 @@ statsmodels>=0.14,<1
 textblob>=0.18,<1
 textstat>=0.7,<1
 transformers>=4.43,<5
+uvicorn[standard]>=0.30,<1
 yfinance>=0.2,<1
