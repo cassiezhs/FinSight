@@ -1,10 +1,10 @@
 # FinSight
 
-## Narrative vs. Market
+## Financial Data Pipeline and Dash Insight Dashboard
 
 ![FinSight dashboard](title_img.png)
 
-FinSight is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
+FinSight combines stock market performance with company financial narrative extracted from SEC filings. The current `main` branch runs a Python Dash dashboard backed by PostgreSQL data ingestion jobs.
 
 The dashboard is centered on a practical question:
 
@@ -12,20 +12,13 @@ The dashboard is centered on a practical question:
 
 ## What The Dashboard Does
 
-- Compares selected 10-K MD&A and Risk sections with the previous available filing.
-- Surfaces new and removed filing language, readability shifts, word-count changes, and narrative tone changes.
-- Produces a `Market Readout` that combines filing tone, event activity, price behavior, and post-filing reaction.
-- Computes a `Narrative vs Market Alignment` signal from:
-  - filing tone change
-  - new risk language count
-  - post-10-K excess return versus the S&P 500
-  - sentiment shift
-  - market reaction label
-- Labels alignment as `Aligned`, `Narrative ahead of market`, `Market skeptical`, or `Risk confirmed`.
-- Marks 10-K and 8-K filing events on price charts.
-- Shows compact expandable 8-K cards with filing date, event type, impact label, short summary, and SEC filing details.
+- Visualizes historical stock prices and trading volume with Plotly charts.
+- Marks 10-K and 8-K filing events on the price timeline.
+- Compares selected 10-K MD&A and Risk Factors sections with prior filings.
+- Shows readability, word-count, sentiment, market reaction, and post-filing return signals.
 - Calculates 1-day, 5-day, and 30-day post-10-K returns and excess returns versus the S&P 500.
-- Supports optional OpenAI change summaries and filing narrative labels.
+- Supports optional OpenAI summaries for filing-language changes.
+- Stores stock prices, benchmark prices, and filing data in PostgreSQL.
 
 ## Data Sources
 
@@ -37,10 +30,11 @@ The dashboard is centered on a practical question:
 
 ## Tech Stack
 
-- React, Vite, and Recharts
-- FastAPI and Python
+- Python Dash and Dash Bootstrap Components
+- Plotly
 - PostgreSQL or Neon Postgres
 - SQLAlchemy and `psycopg2`
+- Yahoo Finance via `yfinance`
 - SEC parsing with Requests and BeautifulSoup
 - Optional OpenAI API summaries
 - Optional FinBERT research pipeline for filing sentiment/modeling experiments
@@ -48,14 +42,9 @@ The dashboard is centered on a practical question:
 ## Project Layout
 
 ```text
-backend/
-  main.py                    # FastAPI routes and built-frontend serving
-  dashboard_service.py       # JSON dashboard service layer
-frontend/
-  src/App.jsx                # React dashboard surface
-  src/api.js                 # FastAPI client
-  src/dashboard.css          # Dashboard design system and visual assets
-  src/styles.css             # React-specific layout overrides
+app/
+  dashoboard.py              # Dash application
+  assets/style.css           # Dashboard styling
 data_ingestiion/
   config.py                  # Environment/config handling
   db.py                      # SQLAlchemy engine setup
@@ -68,26 +57,20 @@ data_ingestiion/
 tests/
   test_event_mapping.py
   test_fetch_sec.py
-render.yaml                   # Staging React/FastAPI Render blueprint
+wsgi.py                      # WSGI entrypoint for Dash deployment
 ```
 
-The data pipeline keeps the existing `data_ingestiion` spelling to avoid breaking imports.
+The source tree keeps the existing `data_ingestiion` and `dashoboard.py` spellings to avoid breaking imports and run commands.
 
 ## Setup
 
-Create a virtual environment and install backend dependencies:
+Create a virtual environment and install dependencies:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
-```
-
-Install the frontend dependencies:
-
-```bash
-npm install --prefix frontend
 ```
 
 Configure `.env`.
@@ -138,7 +121,7 @@ Ingestion jobs read `FINSIGHT_TICKERS`.
 FINSIGHT_TICKERS=AAPL,MSFT,NVDA
 ```
 
-If the variable is omitted, the repo falls back to the default 100-ticker universe in `data_ingestiion/config.py`.
+If the variable is omitted, the repo falls back to the default ticker universe in `data_ingestiion/config.py`.
 
 The dashboard dropdown is database-driven. It shows tickers already present in `stock_prices`, even if a scheduled refresh job only updates a smaller ticker list.
 
@@ -156,7 +139,7 @@ Use `today` as the configured end date when a historical backfill should run thr
 FINSIGHT_END_DATE=today python3 data_ingestiion/load_to_db.py
 ```
 
-Include 10-K MD&A and Risk section extraction:
+Include 10-K MD&A and Risk Factors extraction:
 
 ```bash
 FINSIGHT_LOAD_SEC=1 python3 data_ingestiion/load_to_db.py
@@ -202,61 +185,43 @@ For GitHub Actions, store credentials in repository secrets. A daily job step ca
 - name: Refresh FinSight data
   env:
     DATABASE_URL: ${{ secrets.DATABASE_URL }}
-    SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+    SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
     FINSIGHT_END_DATE: today
     FINSIGHT_DAILY_REFRESH_DAYS: 10
-  run: python3 -m data_ingestiion.daily_refresh --with-8k
+    FINSIGHT_DAILY_LOAD_8K: "1"
+    FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
+  run: python data_ingestiion/daily_refresh.py
 ```
 
-## Run The App
+## Run The Dashboard
 
-Start the FastAPI backend:
+Start the Dash app locally:
 
 ```bash
-uvicorn backend.main:app --reload --port 8000
+python3 app/dashoboard.py
 ```
 
-Start the React dev server in a second terminal:
-
-```bash
-npm run dev --prefix frontend
-```
-
-Open the Vite URL, normally:
-
-```bash
-http://127.0.0.1:5173
-```
-
-Vite proxies `/api` requests to FastAPI locally. Build the frontend for one-service deployment:
-
-```bash
-npm run build --prefix frontend
-uvicorn backend.main:app --port 8000
-```
-
-When `frontend/dist` exists, FastAPI serves the React build at `http://127.0.0.1:8000`.
-
-## API
-
-The UI uses two FastAPI endpoints:
+Open the local Dash URL, normally:
 
 ```text
-GET /api/bootstrap
-GET /api/dashboard?ticker=AAPL&start=2023-01-01&end=2026-05-21
+http://127.0.0.1:8050
 ```
 
-FastAPI interactive API docs are available locally at `/docs`.
+For a production WSGI server, use:
+
+```bash
+gunicorn wsgi:server
+```
 
 ## Deployment
 
-The Render blueprint installs Python dependencies, installs and builds the React frontend, then starts:
+Deploy the Dash app with a Python environment that installs `requirements.txt`, provides the database and SEC environment variables, and starts:
 
 ```bash
-uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+gunicorn wsgi:server
 ```
 
-Store `DATABASE_URL`, `SEC_USER_AGENT`, and optional OpenAI variables in Render environment settings.
+Store `DATABASE_URL`, `SEC_USER_AGENT`, and optional OpenAI variables in the hosting provider's environment settings.
 
 ## Tests
 
