@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import Plotly from "plotly.js-dist-min";
+import { useEffect, useRef, useState } from "react";
+import * as echarts from "echarts";
 import { fetchBootstrap, fetchDashboard } from "./api";
 
 const presets = [
@@ -116,33 +116,81 @@ function Alignment({ alignment }) {
   );
 }
 
-function Plot({ data, layout }) {
+function EChart({ option }) {
   const host = useRef(null);
   useEffect(() => {
-    if (!host.current) return undefined;
-    Plotly.react(host.current, data, layout, { responsive: true, displaylogo: false });
-    return () => Plotly.purge(host.current);
-  }, [data, layout]);
-  return <div className="react-plot" ref={host} />;
+    const node = host.current;
+    if (!node) return undefined;
+    const chart = echarts.init(node, null, { renderer: "canvas" });
+    chart.setOption(option, true);
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      chart.dispose();
+    };
+  }, [option]);
+  return <div className="react-echart" ref={host} />;
 }
 
 function Charts({ charts }) {
   const prices = charts?.prices || [];
   const events = charts?.events || [];
-  const axis = prices.map((row) => row.date);
-  const priceData = [
-    { x: axis, y: prices.map((row) => row.open), name: "Open", type: "scatter", mode: "lines", line: { color: "#8FFE01", width: 3 } },
-    { x: axis, y: prices.map((row) => row.close), name: "Close", type: "scatter", mode: "lines", line: { color: "#7201FF", width: 3 } },
-    { x: events.filter((event) => event.type === "10-K").map((event) => event.chart_date), y: events.filter((event) => event.type === "10-K").map((event) => event.close), text: events.filter((event) => event.type === "10-K").map((event) => `${event.date}<br>${event.details}`), name: "10-K filing", type: "scatter", mode: "markers+text", textposition: "top center", marker: { symbol: "diamond", size: 12, color: "#000", line: { color: "#8FFE01", width: 3 } } },
-    { x: events.filter((event) => event.type === "8-K").map((event) => event.chart_date), y: events.filter((event) => event.type === "8-K").map((event) => event.close), text: events.filter((event) => event.type === "8-K").map((event) => `${event.date}<br>${event.details}`), name: "8-K filing", type: "scatter", mode: "markers", marker: { size: 9, color: "#7201FF", line: { color: "#fff", width: 2 } } }
-  ];
-  const shapes = events.filter((event) => event.type === "10-K").map((event) => ({ type: "line", x0: event.date, x1: event.date, yref: "paper", y0: 0, y1: 1, line: { color: "rgba(5,5,5,.32)", dash: "dot", width: 1 } }));
-  const volumeData = [{ x: axis, y: prices.map((row) => row.volume), type: "bar", marker: { color: "#7201FF" } }];
-  const layout = { paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", margin: { l: 42, r: 18, t: 16, b: 34 }, font: { family: "Urbanist", color: "#111" }, hovermode: "x unified", shapes, legend: { orientation: "h" }, xaxis: { showgrid: false }, yaxis: { gridcolor: "rgba(17,17,17,.08)" } };
+  const eventSeries = (type) => events
+    .filter((event) => event.type === type && event.chart_date && event.close != null)
+    .map((event) => ({ value: [event.chart_date, event.close], filingDate: event.date, details: event.details }));
+  const chartBase = {
+    backgroundColor: "transparent",
+    animationDuration: 450,
+    textStyle: { fontFamily: "Urbanist, system-ui, sans-serif", color: "#111" },
+    grid: { left: 56, right: 24, top: 42, bottom: 72 },
+    legend: { top: 4, left: 0, itemGap: 18 },
+    toolbox: { right: 0, top: 0, feature: { dataZoom: { yAxisIndex: "none" }, restore: {} } },
+    dataZoom: [
+      { type: "inside", xAxisIndex: 0, filterMode: "none", zoomOnMouseWheel: true, moveOnMouseMove: true },
+      { type: "slider", xAxisIndex: 0, height: 28, bottom: 18, borderColor: "rgba(5,5,5,.08)", fillerColor: "rgba(114,1,255,.12)", handleStyle: { color: "#7201FF" } }
+    ],
+    xAxis: { type: "time", axisLine: { lineStyle: { color: "rgba(17,17,17,.16)" } }, axisTick: { show: false }, splitLine: { show: false } },
+    yAxis: { type: "value", scale: true, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: "rgba(17,17,17,.08)" } } }
+  };
+  const priceOption = {
+    ...chartBase,
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" }, valueFormatter: (value) => typeof value === "number" ? `$${value.toFixed(2)}` : value },
+    yAxis: { ...chartBase.yAxis, axisLabel: { formatter: (value) => `$${Number(value).toFixed(0)}` } },
+    series: [
+      { name: "Open", type: "line", smooth: true, showSymbol: false, data: prices.map((row) => [row.date, row.open]), lineStyle: { width: 3, color: "#8FFE01" } },
+      { name: "Close", type: "line", smooth: true, showSymbol: false, data: prices.map((row) => [row.date, row.close]), lineStyle: { width: 3, color: "#7201FF" } },
+      {
+        name: "10-K filing",
+        type: "scatter",
+        symbol: "diamond",
+        symbolSize: 15,
+        itemStyle: { color: "#000", borderColor: "#8FFE01", borderWidth: 2 },
+        data: eventSeries("10-K"),
+        markLine: { symbol: "none", silent: true, lineStyle: { color: "rgba(5,5,5,.28)", type: "dashed", width: 1 }, data: events.filter((event) => event.type === "10-K" && event.chart_date).map((event) => ({ xAxis: event.chart_date })) },
+        tooltip: { formatter: (params) => `<strong>10-K filing</strong><br/>Filing date: ${params.data.filingDate}<br/>${params.data.details || ""}<br/>Chart date: ${params.value[0]}` }
+      },
+      {
+        name: "8-K filing",
+        type: "scatter",
+        symbolSize: 10,
+        itemStyle: { color: "#7201FF", borderColor: "#fff", borderWidth: 2 },
+        data: eventSeries("8-K"),
+        tooltip: { formatter: (params) => `<strong>8-K filing</strong><br/>Filing date: ${params.data.filingDate}<br/>${params.data.details || ""}<br/>Chart date: ${params.value[0]}` }
+      }
+    ]
+  };
+  const volumeOption = {
+    ...chartBase,
+    legend: { show: false },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (value) => Number(value).toLocaleString() },
+    yAxis: { ...chartBase.yAxis, axisLabel: { formatter: (value) => `${(Number(value) / 1_000_000).toFixed(0)}M` } },
+    series: [{ name: "Volume", type: "bar", data: prices.map((row) => [row.date, row.volume]), itemStyle: { color: "#7201FF", borderRadius: [4, 4, 0, 0] }, large: true }]
+  };
   return (
     <div className="grid charts">
-      <section className="card chart-card"><CardHead eyebrow="Trend" title="Open vs Close Prices" note="Black diamonds mark 10-K filings. Purple dots mark 8-K filings." />{prices.length ? <Plot data={priceData} layout={layout} /> : <Empty>No price data in range.</Empty>}</section>
-      <section className="card chart-card"><CardHead eyebrow="Liquidity" title="Trading Volume" />{prices.length ? <Plot data={volumeData} layout={{ ...layout, showlegend: false, shapes: [] }} /> : <Empty>No volume data in range.</Empty>}</section>
+      <section className="card chart-card"><CardHead eyebrow="Trend" title="Open vs Close Prices" note="Use wheel or trackpad to zoom. Drag inside the plot to move the time window." />{prices.length ? <EChart option={priceOption} /> : <Empty>No price data in range.</Empty>}</section>
+      <section className="card chart-card"><CardHead eyebrow="Liquidity" title="Trading Volume" />{prices.length ? <EChart option={volumeOption} /> : <Empty>No volume data in range.</Empty>}</section>
     </div>
   );
 }
@@ -244,15 +292,13 @@ function FilingSections({ sections }) {
   return (
     <>
       <div className="sentiment-tag">Sentiment - MD&amp;A: {sections.mdna.sentiment} | Risk: {sections.risk.sentiment}</div>
-      <div className="grid info">
-        <div className="stack">
-          <TextPanel eyebrow="Filing stream" title="MD&A - Management Discussion" section={sections.mdna} />
-          <TextPanel eyebrow="Risk factors" title="Risk Sections" section={sections.risk} />
-        </div>
-        <div className="stack">
-          <SummaryPanel title="MD&A: What Changed" summary={sections.mdna.summary} />
-          <SummaryPanel title="Risk: What Changed" summary={sections.risk.summary} />
-        </div>
+      <div className="grid ai-summary-grid">
+        <SummaryPanel title="MD&A Summary" summary={sections.mdna.summary} />
+        <SummaryPanel title="Risk Summary" summary={sections.risk.summary} />
+      </div>
+      <div className="grid info filing-section-grid">
+        <TextPanel eyebrow="Filing stream" title="MD&A - Management Discussion" section={sections.mdna} />
+        <TextPanel eyebrow="Risk factors" title="Risk Sections" section={sections.risk} />
       </div>
     </>
   );
@@ -272,7 +318,12 @@ function TextPanel({ eyebrow, title, section }) {
 }
 
 function SummaryPanel({ title, summary }) {
-  return <section className="card summary-card"><CardHead eyebrow="AI digest" title={title} /><div className="summary-box">{summary || "No summary available."}</div></section>;
+  return (
+    <section className="card summary-card">
+      <CardHead eyebrow="AI summary" title={title} />
+      <div className="summary-box">{summary || "No summary available."}</div>
+    </section>
+  );
 }
 
 export default function App() {
@@ -288,7 +339,9 @@ export default function App() {
     fetchBootstrap(controller.signal).then((data) => {
       setBootstrap(data);
       setSelection({ ticker: data.default_ticker || "", start: data.start_date || "", end: data.end_date || "" });
-    }).catch((error) => setBootError(error.message));
+    }).catch((error) => {
+      if (error.name !== "AbortError") setBootError(error.message);
+    });
     return () => controller.abort();
   }, []);
 
@@ -305,16 +358,17 @@ export default function App() {
   }, [selection]);
 
   const invalidRange = selection.start && selection.end && selection.start > selection.end;
-  const heading = useMemo(() => dashboard ? `${dashboard.ticker} ${dashboard.range.filing_years}` : "Narrative vs. Market", [dashboard]);
   const applyPreset = (preset) => setSelection((value) => ({ ...value, ...presetRange(preset, bootstrap) }));
 
   if (bootError) return <main className="page-shell"><Empty>{bootError}</Empty></main>;
   return (
     <main className="page-shell">
-      <header className="topbar"><div className="brand"><div className="brand-mark">F</div><span>FinSight</span></div><div className="topbar-action">React + FastAPI</div></header>
+      <header className="topbar" data-parallax-depth="4"><div className="brand"><div className="brand-mark">F</div><span>FinSight</span></div><div className="topbar-action">React + FastAPI</div></header>
       <section className="hero-card">
-        <div className="hero-meta"><span className="eyebrow">Market pulse</span><h1>{heading}</h1><p>Analyzing how 10-K filing language aligns with stock price movement, market reaction, and risk signals.</p></div>
-        <Kpis kpis={dashboard?.kpis || []} loading={loading || !dashboard} />
+        <div className="hero-meta" data-parallax-depth="10"><span className="eyebrow">Market pulse</span><h1>Narrative vs. Market</h1><p>Analyzing how 10-K filing language aligns with stock price movement, market reaction, and risk signals.</p></div>
+        <div data-parallax-depth="18">
+          <Kpis kpis={dashboard?.kpis || []} loading={loading || !dashboard} />
+        </div>
       </section>
       <section className="controls-card card">
         <label className="field">Select Ticker<select value={selection.ticker} onChange={(event) => setSelection((value) => ({ ...value, ticker: event.target.value }))}>{(bootstrap?.tickers || []).map((ticker) => <option key={ticker}>{ticker}</option>)}</select></label>

@@ -11,6 +11,8 @@
   --purple: #7201ff;
   --soft-purple: rgba(114, 1, 255, 0.12);
   --shadow: 0 24px 70px rgba(42, 35, 55, 0.12);
+  --parallax-x: 0;
+  --parallax-y: 0;
 }
 
 * {
@@ -39,6 +41,7 @@ body {
   border-radius: 22px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
+  perspective: 1200px;
 }
 
 .topbar {
@@ -95,6 +98,7 @@ body {
 
 .hero-meta h1 {
   margin: 8px 0 6px;
+  font-family: 'Myrtille Pixel', 'Pixelify Sans', 'Press Start 2P', 'Courier New', monospace;
   font-size: clamp(38px, 6vw, 76px);
   line-height: 0.95;
   font-weight: 500;
@@ -133,6 +137,11 @@ body {
     linear-gradient(118deg, rgba(255, 255, 255, 0.82), rgba(252, 251, 255, 0.68) 34%, rgba(249, 244, 255, 0.76));
   filter: blur(10px) saturate(1.08);
   pointer-events: none;
+  transform: translate3d(
+    calc(var(--parallax-x) * 8px),
+    calc(var(--parallax-y) * 8px),
+    -20px
+  );
 }
 
 .hero-kpis {
@@ -692,6 +701,14 @@ label {
 
 .info {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+}
+
+.filing-section-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ai-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .chart-card,
@@ -1340,6 +1357,8 @@ label {
   .info,
   .readout-grid,
   .kpi-grid,
+  .ai-summary-grid,
+  .filing-section-grid,
   .controls-card {
     grid-template-columns: 1fr;
   }

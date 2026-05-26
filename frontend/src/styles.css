@@ -4,6 +4,39 @@ select {
   font: inherit;
 }
 
+[data-parallax-depth] {
+  transform:
+    translate3d(
+      calc(var(--parallax-x) * var(--parallax-depth, 0px)),
+      calc(var(--parallax-y) * var(--parallax-depth, 0px)),
+      0
+    )
+    rotateX(calc(var(--parallax-y) * -1deg))
+    rotateY(calc(var(--parallax-x) * 1deg));
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+[data-parallax-depth="4"] {
+  --parallax-depth: 4px;
+}
+
+[data-parallax-depth="6"] {
+  --parallax-depth: 6px;
+}
+
+[data-parallax-depth="8"] {
+  --parallax-depth: 8px;
+}
+
+[data-parallax-depth="10"] {
+  --parallax-depth: 10px;
+}
+
+[data-parallax-depth="18"] {
+  --parallax-depth: 18px;
+}
+
 select,
 .native-range input {
   min-height: 48px;
@@ -60,13 +93,8 @@ label.field {
   min-height: 180px;
 }
 
-.react-plot {
+.react-echart {
   height: 350px;
-}
-
-.chart-card .js-plotly-plot,
-.chart-card .plot-container {
-  height: 100%;
 }
 
 .filing-text,
@@ -84,7 +112,7 @@ label.field {
 }
 
 .summary-box {
-  max-height: 260px;
+  max-height: 150px;
   font-weight: 750;
 }
 
@@ -123,6 +151,11 @@ label.field {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  [data-parallax-depth] {
+    transform: none;
+    will-change: auto;
+  }
+
   .react-loading i {
     animation: none;
   }

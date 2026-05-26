@@ -11,8 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.dashboard_service import build_dashboard, get_bootstrap
-
 
 app = FastAPI(title="FinSight API", version="1.0.0")
 origins = [origin.strip() for origin in os.getenv("FINSIGHT_CORS_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
@@ -33,6 +31,8 @@ def health():
 @app.get("/api/bootstrap")
 def bootstrap():
     try:
+        from backend.dashboard_service import get_bootstrap
+
         return get_bootstrap()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Bootstrap query failed: {exc}") from exc
@@ -47,6 +47,8 @@ def dashboard(
     if start > end:
         raise HTTPException(status_code=422, detail="start must be on or before end")
     try:
+        from backend.dashboard_service import build_dashboard
+
         return build_dashboard(ticker.upper(), start.isoformat(), end.isoformat())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Dashboard query failed: {exc}") from exc

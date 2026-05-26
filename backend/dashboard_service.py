@@ -15,17 +15,6 @@ from sqlalchemy import inspect
 from data_ingestiion.config import settings
 from data_ingestiion.db import get_engine
 
-try:
-    import textstat
-except ImportError:  # pragma: no cover - optional dependency
-    textstat = None
-
-try:
-    from textblob import TextBlob
-except ImportError:  # pragma: no cover - optional dependency
-    TextBlob = None
-
-
 OPENAI_ENABLED = os.getenv("OPENAI_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -205,7 +194,28 @@ def keyword_hits(text: str, terms: list[str]) -> int:
     return sum(term in text for term in terms)
 
 
+@lru_cache(maxsize=1)
+def textblob_cls():
+    try:
+        from textblob import TextBlob
+
+        return TextBlob
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def textstat_module():
+    try:
+        import textstat
+
+        return textstat
+    except Exception:
+        return None
+
+
 def local_sentiment_score(text: str) -> float | None:
+    TextBlob = textblob_cls()
     if not TextBlob or not text:
         return None
     try:
@@ -278,7 +288,7 @@ def summarize_section(section_name: str, text: str, previous_text: str) -> str:
         response = OPENAI_CLIENT.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "Write exactly 3 concise bullets for investors. Focus only on what is New, Different, and Important. Avoid boilerplate."},
+                {"role": "system", "content": "Write exactly 2 short bullets for investors. Each bullet must be 18 words or fewer. Summarize the current filing section, not year-over-year changes. Avoid boilerplate."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
@@ -324,6 +334,7 @@ def sentence_changes(current: str, previous: str, limit: int = 4) -> tuple[list[
 def section_metrics(current: str, previous: str) -> dict[str, Any]:
     words = lambda text: len(re.findall(r"\b[\w'-]+\b", text or ""))
     def readability(text: str) -> float | None:
+        textstat = textstat_module()
         if not textstat or not text:
             return None
         try:
@@ -632,7 +643,7 @@ def serialize_section(name: str, table: str, ticker: str, section: pd.Series | N
         "url": sec_filing_search_url(section["cik"], "10-K", section["filing_date"]),
         "text": (section["content"] or "")[:5000],
         "summary": summarize_section(name, section["content"] or "", previous["content"] if previous is not None else ""),
-        "sentiment": ai_narrative_label((section["content"] or "")[:5000]),
+        "sentiment": narrative_label(section["content"] or ""),
     }
 
 
