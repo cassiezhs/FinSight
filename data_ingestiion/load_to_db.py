@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Full Data Ingestion Script:
-- Fetches SEC 10-K Risk & MD&A sections (via fetch_sec.py)
+- Fetches SEC 10-Q/10-K Risk & MD&A sections (via fetch_sec.py)
 - Fetches stock prices & S&P 500 index (via yfinance)
 - Writes everything to PostgreSQL with de-duplication
 
@@ -27,7 +27,7 @@ try:
     from .config import TICKERS, next_date, resolve_date, settings
     from .db import get_engine
     from .fetch_sec import (
-        get_cik, get_10k_meta_for_year, get_10k_html_url,
+        get_cik, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
         extract_risk_from_main_html, extract_mdna_from_main_html,
         get_8k_meta, extract_8k_detail_preview,
     )
@@ -35,7 +35,7 @@ except ImportError:
     from config import TICKERS, next_date, resolve_date, settings
     from db import get_engine
     from fetch_sec import (
-        get_cik, get_10k_meta_for_year, get_10k_html_url,
+        get_cik, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
         extract_risk_from_main_html, extract_mdna_from_main_html,
         get_8k_meta, extract_8k_detail_preview,
     )
@@ -204,8 +204,8 @@ def fetch_sp500_data(start_date, end_date):
         return pd.DataFrame()
 
 # --------------- SEC Data ---------------
-def collect_sec_sections(tickers, start_year, end_year):
-    """Collect Risk and MD&A sections for all tickers."""
+def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, ...] = ("10-K", "10-Q")):
+    """Collect Risk and MD&A sections for all tickers and selected periodic filing forms."""
     rows_risk, rows_mdna = [], []
     for tkr in tickers:
         cik = get_cik(tkr)
@@ -213,44 +213,47 @@ def collect_sec_sections(tickers, start_year, end_year):
             print(f"⚠️ No CIK for {tkr}")
             continue
         for yr in range(start_year, end_year + 1):
-            try:
-                idx_url, filing_date = get_10k_meta_for_year(cik, yr)
-                if not idx_url:
-                    continue
-                html_url = get_10k_html_url(idx_url)
-                if not html_url:
-                    continue
-                time.sleep(0.25)  # polite to SEC servers
+            for form_type in form_types:
+                try:
+                    idx_url, filing_date, found_form = get_filing_meta_for_year(cik, yr, (form_type,))
+                    if not idx_url:
+                        continue
+                    html_url = get_10k_html_url(idx_url)
+                    if not html_url:
+                        continue
+                    time.sleep(0.25)  # polite to SEC servers
 
-                risk = extract_risk_from_main_html(html_url)
-                mdna = extract_mdna_from_main_html(html_url)
-                company_name = None
-                if "Alphabet" in risk or "Alphabet" in mdna:
-                    company_name = "Alphabet Inc."
-                elif "Apple" in risk or "Apple" in mdna:
-                    company_name = "Apple Inc."
-                else:
-                    company_name = f"{tkr} Corp."
+                    risk = extract_risk_from_main_html(html_url)
+                    mdna = extract_mdna_from_main_html(html_url)
+                    company_name = None
+                    if "Alphabet" in risk or "Alphabet" in mdna:
+                        company_name = "Alphabet Inc."
+                    elif "Apple" in risk or "Apple" in mdna:
+                        company_name = "Apple Inc."
+                    else:
+                        company_name = f"{tkr} Corp."
 
-                rows_risk.append({
-                    "cik": cik,
-                    "company_name": company_name,
-                    "filing_date": filing_date,
-                    "content": risk,
-                    "chunk_index": 0,
-                    "ticker": tkr,
-                })
-                rows_mdna.append({
-                    "cik": cik,
-                    "company_name": company_name,
-                    "filing_date": filing_date,
-                    "content": mdna,
-                    "chunk_index": 0,
-                    "ticker": tkr,
-                })
-            except Exception as e:
-                print(f"❌ Error {tkr} {yr}: {e}")
-                continue
+                    rows_risk.append({
+                        "cik": cik,
+                        "company_name": company_name,
+                        "filing_date": filing_date,
+                        "form_type": found_form or form_type,
+                        "content": risk,
+                        "chunk_index": 0,
+                        "ticker": tkr,
+                    })
+                    rows_mdna.append({
+                        "cik": cik,
+                        "company_name": company_name,
+                        "filing_date": filing_date,
+                        "form_type": found_form or form_type,
+                        "content": mdna,
+                        "chunk_index": 0,
+                        "ticker": tkr,
+                    })
+                except Exception as e:
+                    print(f"❌ Error {tkr} {yr} {form_type}: {e}")
+                    continue
 
     df_risk = pd.DataFrame(rows_risk)
     df_mdna = pd.DataFrame(rows_mdna)
@@ -264,7 +267,18 @@ def upsert_sections(df, engine, table):
     if df.empty:
         print(f"⚠️ No rows to insert for {table}")
         return
-    append_on_conflict_do_nothing(df, table, engine, ["cik", "filing_date", "chunk_index"])
+    ensure_section_table_columns(engine, table)
+    append_on_conflict_do_nothing(df, table, engine, ["cik", "filing_date", "form_type", "chunk_index"])
+
+
+def ensure_section_table_columns(engine, table_name: str):
+    if not inspect(engine).has_table(table_name, schema=DB_SCHEMA):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE {_qualified(table_name)} "
+            "ADD COLUMN IF NOT EXISTS form_type TEXT DEFAULT '10-K'"
+        ))
 
 
 def collect_8k_filings(tickers, start_year, end_year):

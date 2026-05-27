@@ -19,6 +19,7 @@ OPENAI_ENABLED = os.getenv("OPENAI_ENABLED", "1").strip().lower() in {"1", "true
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_ENABLED and OPENAI_API_KEY else None
+PERIODIC_FORMS = ("10-Q", "10-K")
 
 
 @lru_cache(maxsize=1)
@@ -52,6 +53,17 @@ def number(value: Any) -> float | None:
     return float(value)
 
 
+def table_has_column(table: str, column: str) -> bool:
+    try:
+        return any(col["name"] == column for col in inspect(engine()).get_columns(table, schema=settings.db_schema))
+    except Exception:
+        return False
+
+
+def form_type_expr(table: str) -> str:
+    return "COALESCE(form_type, '10-K')" if table_has_column(table, "form_type") else "'10-K'"
+
+
 def get_bootstrap() -> dict[str, Any]:
     tickers = pd.read_sql("SELECT DISTINCT ticker FROM stock_prices ORDER BY ticker", engine())["ticker"].tolist()
     bounds = pd.read_sql('SELECT MIN("Date") AS start_date, MAX("Date") AS end_date FROM stock_prices', engine())
@@ -82,26 +94,28 @@ def stock_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
 
 
 def filing_events(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+    mdna_form = form_type_expr("mdna_sections")
+    risk_form = form_type_expr("risk_sections")
     query = """
-        SELECT filing_date, MIN(cik) AS cik, STRING_AGG(section_type, ' + ' ORDER BY section_type) AS details
+        SELECT filing_date, form_type, MIN(cik) AS cik, STRING_AGG(section_type, ' + ' ORDER BY section_type) AS details
         FROM (
-            SELECT DISTINCT filing_date, cik, 'MD&A' AS section_type
+            SELECT DISTINCT filing_date, cik, {mdna_form} AS form_type, 'MD&A' AS section_type
             FROM mdna_sections
             WHERE ticker = %s AND filing_date >= %s::date AND filing_date <= %s::date
             UNION
-            SELECT DISTINCT filing_date, cik, 'Risk' AS section_type
+            SELECT DISTINCT filing_date, cik, {risk_form} AS form_type, 'Risk' AS section_type
             FROM risk_sections
             WHERE ticker = %s AND filing_date >= %s::date AND filing_date <= %s::date
         ) events
-        GROUP BY filing_date
+        GROUP BY filing_date, form_type
         ORDER BY filing_date;
-    """
+    """.format(mdna_form=mdna_form, risk_form=risk_form)
     ten_k = pd.read_sql(query, engine(), params=(ticker, start_date, end_date, ticker, start_date, end_date))
     if not ten_k.empty:
         ten_k["filing_date"] = pd.to_datetime(ten_k["filing_date"])
-        ten_k["event_type"] = "10-K"
+        ten_k["event_type"] = ten_k["form_type"].fillna("10-K")
         ten_k["filing_url"] = ten_k.apply(
-            lambda row: sec_filing_search_url(row["cik"], "10-K", row["filing_date"]), axis=1
+            lambda row: sec_filing_search_url(row["cik"], row["event_type"], row["filing_date"]), axis=1
         )
     if not inspect(engine()).has_table("sec_8k_filings", schema=settings.db_schema):
         return ten_k
@@ -142,11 +156,14 @@ def load_8k_events(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
 def section_for_years(table: str, ticker: str, start_year: int, end_year: int) -> pd.Series | None:
     if table not in {"mdna_sections", "risk_sections"}:
         raise ValueError(f"Unsupported filing section table: {table}")
+    form_expr = form_type_expr(table)
+    form_filter = "AND COALESCE(form_type, '10-K') IN ('10-Q', '10-K')" if table_has_column(table, "form_type") else ""
     query = f"""
-        SELECT filing_date, MIN(cik) AS cik, STRING_AGG(content, ' ' ORDER BY chunk_index) AS content
+        SELECT filing_date, {form_expr} AS form_type, MIN(cik) AS cik, STRING_AGG(content, ' ' ORDER BY chunk_index) AS content
         FROM {table}
         WHERE ticker = %s AND EXTRACT(YEAR FROM filing_date) >= %s AND EXTRACT(YEAR FROM filing_date) <= %s
-        GROUP BY filing_date
+        {form_filter}
+        GROUP BY filing_date, form_type
         ORDER BY filing_date DESC
         LIMIT 1;
     """
@@ -157,11 +174,12 @@ def section_for_years(table: str, ticker: str, start_year: int, end_year: int) -
 def previous_section(table: str, ticker: str, current_filing_date: Any) -> pd.Series | None:
     if table not in {"mdna_sections", "risk_sections"}:
         raise ValueError(f"Unsupported filing section table: {table}")
+    form_expr = form_type_expr(table)
     query = f"""
-        SELECT filing_date, MIN(cik) AS cik, STRING_AGG(content, ' ' ORDER BY chunk_index) AS content
+        SELECT filing_date, {form_expr} AS form_type, MIN(cik) AS cik, STRING_AGG(content, ' ' ORDER BY chunk_index) AS content
         FROM {table}
         WHERE ticker = %s AND filing_date < %s::date
-        GROUP BY filing_date
+        GROUP BY filing_date, form_type
         ORDER BY filing_date DESC
         LIMIT 1;
     """
@@ -395,25 +413,27 @@ def serialize_8k(ticker: str, start_date: str, end_date: str) -> list[dict[str, 
     return output
 
 
-def load_10k_filings(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+def load_periodic_filings(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
+    mdna_form = form_type_expr("mdna_sections")
+    risk_form = form_type_expr("risk_sections")
     query = """
-        SELECT filing_date, MIN(cik) AS cik, STRING_AGG(section_type, ' + ' ORDER BY section_type) AS sections
+        SELECT filing_date, form_type, MIN(cik) AS cik, STRING_AGG(section_type, ' + ' ORDER BY section_type) AS sections
         FROM (
-            SELECT DISTINCT filing_date, cik, 'MD&A' AS section_type
+            SELECT DISTINCT filing_date, cik, {mdna_form} AS form_type, 'MD&A' AS section_type
             FROM mdna_sections
             WHERE ticker = %s AND filing_date >= %s::date AND filing_date <= %s::date
             UNION
-            SELECT DISTINCT filing_date, cik, 'Risk' AS section_type
+            SELECT DISTINCT filing_date, cik, {risk_form} AS form_type, 'Risk' AS section_type
             FROM risk_sections
             WHERE ticker = %s AND filing_date >= %s::date AND filing_date <= %s::date
         ) filings
-        GROUP BY filing_date
+        GROUP BY filing_date, form_type
         ORDER BY filing_date DESC;
-    """
+    """.format(mdna_form=mdna_form, risk_form=risk_form)
     df = pd.read_sql(query, engine(), params=(ticker, start_date, end_date, ticker, start_date, end_date))
     if not df.empty:
         df["filing_date"] = pd.to_datetime(df["filing_date"])
-        df["url"] = df.apply(lambda row: sec_filing_search_url(row["cik"], "10-K", row["filing_date"]), axis=1)
+        df["url"] = df.apply(lambda row: sec_filing_search_url(row["cik"], row["form_type"], row["filing_date"]), axis=1)
     return df
 
 
@@ -488,7 +508,7 @@ def horizons_for_filing(prices: pd.DataFrame, sp500: pd.DataFrame, filing_date: 
 
 
 def serialize_reactions(ticker: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
-    filings = load_10k_filings(ticker, start_date, end_date)
+    filings = load_periodic_filings(ticker, start_date, end_date)
     prices, sp500 = price_window(ticker, start_date, end_date), sp500_window(start_date, end_date)
     output = []
     for row in filings.itertuples(index=False):
@@ -497,6 +517,7 @@ def serialize_reactions(ticker: str, start_date: str, end_date: str) -> list[dic
         output.append(
             {
                 "date": date_text(row.filing_date),
+                "form_type": row.form_type,
                 "sections": row.sections,
                 "url": row.url,
                 "label": reaction_label(excess),
@@ -512,6 +533,37 @@ def latest_10k_excess(reactions: list[dict[str, Any]]) -> float | None:
         return None
     horizons = reactions[0]["horizons"]
     return next((horizons[key]["excess"] for key in ("5", "1", "30") if horizons[key]["excess"] is not None), None)
+
+
+def latest_disclosure(mdna: pd.Series | None, risk: pd.Series | None, end_date: str, reactions: list[dict[str, Any]]) -> dict[str, Any]:
+    candidates = [section for section in (mdna, risk) if section is not None and not pd.isna(section["filing_date"])]
+    if not candidates:
+        return {
+            "form_type": "N/A",
+            "date": None,
+            "days_since": None,
+            "freshness": "missing",
+            "label": "No periodic disclosure",
+            "mdna_tone": "N/A",
+            "risk_tone": "N/A",
+            "reaction": None,
+        }
+    latest = max(candidates, key=lambda section: pd.to_datetime(section["filing_date"]))
+    filing_date = pd.to_datetime(latest["filing_date"])
+    days_since = int((pd.to_datetime(end_date) - filing_date).days)
+    freshness = "recent" if days_since <= 45 else "context" if days_since <= 90 else "stale"
+    form_type = str(latest.get("form_type", "10-K") or "10-K")
+    reaction = next((item for item in reactions if item["date"] == date_text(filing_date)), None)
+    return {
+        "form_type": form_type,
+        "date": date_text(filing_date),
+        "days_since": days_since,
+        "freshness": freshness,
+        "label": f"{form_type} filed {days_since} days before range end",
+        "mdna_tone": narrative_label(mdna["content"] if mdna is not None else ""),
+        "risk_tone": narrative_label(risk["content"] if risk is not None else ""),
+        "reaction": reaction,
+    }
 
 
 def tone_score(label: str) -> float:
@@ -549,13 +601,13 @@ def alignment(mdna: pd.Series | None, risk: pd.Series | None, ticker: str, exces
     narrative = tone_direction(current_mdna_tone)
     risk_pressure = len(risk_added) >= 3 or risk_tone == "Risk-Elevated"
     if risk_pressure and market < 0:
-        output, why = "Risk confirmed", "New risk language and a negative post-10-K excess return point in the same direction."
+        output, why = "Risk confirmed", "New risk language and a negative post-disclosure excess return point in the same direction."
     elif narrative > 0 and market < 0:
         output, why = "Market skeptical", "The filing narrative reads constructive, but the market reaction lagged the S&P 500."
     elif narrative < 0 and market > 0:
         output, why = "Narrative ahead of market", "The filing language is cautious while the market reaction has not confirmed that caution."
     elif market and narrative == market:
-        output, why = "Aligned", "Filing tone and post-10-K market reaction move in the same direction."
+        output, why = "Aligned", "Filing tone and post-disclosure market reaction move in the same direction."
     elif risk_pressure:
         output, why = "Narrative ahead of market", "Risk language changed before a decisive market reaction appeared."
     else:
@@ -597,9 +649,9 @@ def build_kpis(ticker: str, start_date: str, end_date: str, prices: pd.DataFrame
         {"label": "Volatility", "value": format_pct(volatility), "detail": "Annualized daily close", "tone": "neutral"},
         {"label": "Avg Volume", "value": format_compact_number(average_volume), "detail": "Shares per trading day", "tone": "neutral"},
         {"label": "Latest Close", "value": format_price(latest_close), "detail": latest_price_date, "tone": "neutral"},
-        {"label": "Latest Filing", "value": latest_filing, "detail": latest_detail, "tone": "neutral"},
-        {"label": "MD&A Sentiment", "value": mdna_badge[0], "detail": mdna_badge[1], "tone": mdna_badge[2]},
-        {"label": "Risk Sentiment", "value": risk_badge[0], "detail": risk_badge[1], "tone": risk_badge[2]},
+        {"label": "Latest Disclosure", "value": latest_filing, "detail": latest_detail, "tone": "neutral"},
+        {"label": "MD&A Tone", "value": mdna_badge[0], "detail": mdna_badge[1], "tone": mdna_badge[2]},
+        {"label": "Risk Disclosure", "value": risk_badge[0], "detail": risk_badge[1], "tone": risk_badge[2]},
     ]
 
 
@@ -617,8 +669,8 @@ def serialize_comparison(name: str, table: str, ticker: str, current: pd.Series 
         "status": "ready",
         "current_date": current_date,
         "previous_date": previous_date,
-        "current_url": sec_filing_search_url(current["cik"], "10-K", current["filing_date"]),
-        "previous_url": sec_filing_search_url(previous["cik"], "10-K", previous["filing_date"]),
+        "current_url": sec_filing_search_url(current["cik"], current.get("form_type", "10-K"), current["filing_date"]),
+        "previous_url": sec_filing_search_url(previous["cik"], previous.get("form_type", "10-K"), previous["filing_date"]),
         "metrics": section_metrics(current["content"], previous["content"]),
         "ai_change_summary": summarize_changes(name, current_date or "", previous_date or "", current["content"], previous["content"]),
         "added": added,
@@ -630,6 +682,7 @@ def serialize_section(name: str, table: str, ticker: str, section: pd.Series | N
     if section is None:
         return {
             "name": name,
+            "form_type": None,
             "date": None,
             "url": None,
             "text": f"No {name} filing found for {ticker} in filing year {year_label}.",
@@ -639,8 +692,9 @@ def serialize_section(name: str, table: str, ticker: str, section: pd.Series | N
     previous = previous_section(table, ticker, section["filing_date"])
     return {
         "name": name,
+        "form_type": section.get("form_type", "10-K"),
         "date": date_text(section["filing_date"]),
-        "url": sec_filing_search_url(section["cik"], "10-K", section["filing_date"]),
+        "url": sec_filing_search_url(section["cik"], section.get("form_type", "10-K"), section["filing_date"]),
         "text": (section["content"] or "")[:5000],
         "summary": summarize_section(name, section["content"] or "", previous["content"] if previous is not None else ""),
         "sentiment": narrative_label(section["content"] or ""),
@@ -718,7 +772,7 @@ def price_coverage(prices: pd.DataFrame, start_date: str, end_date: str) -> dict
     }
 
 
-def market_readout(prices: pd.DataFrame, mdna: pd.Series | None, risk: pd.Series | None, events_8k: list[dict[str, Any]], comparison_alignment: dict[str, Any] | None, excess: float | None) -> dict[str, Any]:
+def market_readout(prices: pd.DataFrame, mdna: pd.Series | None, risk: pd.Series | None, events_8k: list[dict[str, Any]], comparison_alignment: dict[str, Any] | None, excess: float | None, disclosure: dict[str, Any]) -> dict[str, Any]:
     range_return = volatility = None
     if not prices.empty:
         first, latest = float(prices.iloc[0]["Close"]), float(prices.iloc[-1]["Close"])
@@ -735,25 +789,30 @@ def market_readout(prices: pd.DataFrame, mdna: pd.Series | None, risk: pd.Series
         score += 1.2 if excess >= 0.02 else -1.2 if excess <= -0.02 else 0
     if volatility is not None:
         score -= 0.8 if volatility >= 0.45 else 0.4 if volatility >= 0.32 else 0
-    score += tone_score(mdna_tone) + tone_score(risk_tone) - min(high * 0.55, 1.1)
+    freshness_weight = {"recent": 1.0, "context": 0.45, "stale": 0.15, "missing": 0.0}.get(disclosure["freshness"], 0.0)
+    score += (tone_score(mdna_tone) + tone_score(risk_tone)) * freshness_weight - min(high * 0.55, 1.1)
     stance = "Constructive" if score >= 1.75 else "Mixed" if score >= -0.75 else "Cautious" if score >= -2.25 else "Risk-Off"
     why = {
-        "Constructive": "Price action and filing language lean supportive, with no dominant risk signal overwhelming the readout.",
+        "Constructive": "Price action and recent disclosure evidence lean supportive, with no dominant risk signal overwhelming the readout.",
         "Mixed": "Signals are not pointing in one clean direction, so the selected period needs confirmation.",
-        "Cautious": "Filing language or market reaction suggests more caution than the headline price alone implies.",
+        "Cautious": "Market reaction, disclosure tone, or event activity suggests more caution than the headline price alone implies.",
         "Risk-Off": "Risk tone, market reaction, and event activity point to a materially defensive readout.",
     }[stance]
-    if risk_tone == "Risk-Elevated":
-        driver = "Risk language is elevated in the selected filing period."
+    if disclosure["freshness"] == "stale":
+        driver = f"Price action is market-led; the latest {disclosure['form_type']} is {disclosure['days_since']} days old, so filing tone is background context."
+    elif disclosure["freshness"] == "missing":
+        driver = "No periodic filing sections are stored for this range, so the readout is driven by price action and 8-K events."
     elif excess is not None and excess <= -0.02:
-        driver = "The latest 10-K reaction underperformed the S&P 500."
+        driver = f"The latest {disclosure['form_type']} reaction underperformed the S&P 500."
     elif excess is not None and excess >= 0.02:
-        driver = "The latest 10-K reaction outperformed the S&P 500."
+        driver = f"The latest {disclosure['form_type']} reaction outperformed the S&P 500."
+    elif risk_tone == "Risk-Elevated":
+        driver = f"Recent {disclosure['form_type']} risk language is elevated."
     elif range_return is not None and abs(range_return) >= 0.08:
         driver = f"Stock performance was {'strong positive' if range_return > 0 else 'weak'} over the selected range."
     else:
-        driver = "Filing tone is the main signal."
-    watch = "Watch whether the next filing repeats the same risk language." if risk_tone in {"Risk-Elevated", "Cautious"} else "Watch the next 10-K or 8-K for a clearer narrative change."
+        driver = "Disclosure tone is contextual; short-window reaction and price action carry more weight."
+    watch = "Watch the next 10-Q, 10-K, or 8-K for fresher narrative evidence." if disclosure["freshness"] != "recent" else "Watch whether the next filing repeats the same risk language."
     return {
         "stance": stance,
         "stance_tone": {"Constructive": "positive", "Mixed": "neutral", "Cautious": "cautious", "Risk-Off": "negative"}[stance],
@@ -761,7 +820,8 @@ def market_readout(prices: pd.DataFrame, mdna: pd.Series | None, risk: pd.Series
         "why": why,
         "driver": driver,
         "watch": watch,
-        "facts": {"return": format_pct(range_return), "risk_tone": risk_tone, "eight_k_impact": f"{high} high / {medium} medium"},
+        "facts": {"return": format_pct(range_return), "risk_tone": risk_tone, "eight_k_impact": f"{high} high / {medium} medium", "disclosure": disclosure["label"]},
+        "disclosure": disclosure,
         "alignment": comparison_alignment,
     }
 
@@ -773,6 +833,7 @@ def build_dashboard(ticker: str, start_date: str, end_date: str) -> dict[str, An
     mdna, risk = section_for_years("mdna_sections", ticker, start_year, end_year), section_for_years("risk_sections", ticker, start_year, end_year)
     eight_k, reactions = serialize_8k(ticker, start_date, end_date), serialize_reactions(ticker, start_date, end_date)
     excess = latest_10k_excess(reactions)
+    disclosure = latest_disclosure(mdna, risk, end_date, reactions)
     alignment_signal = alignment(mdna, risk, ticker, excess)
     return {
         "ticker": ticker,
@@ -780,7 +841,7 @@ def build_dashboard(ticker: str, start_date: str, end_date: str) -> dict[str, An
         "kpis": build_kpis(ticker, start_date, end_date, prices, events, mdna, risk),
         "price_coverage": price_coverage(prices, start_date, end_date),
         "charts": serialize_charts(prices, events),
-        "market_readout": market_readout(prices, mdna, risk, eight_k, alignment_signal, excess),
+        "market_readout": market_readout(prices, mdna, risk, eight_k, alignment_signal, excess, disclosure),
         "comparison": [
             serialize_comparison("MD&A", "mdna_sections", ticker, mdna),
             serialize_comparison("Risk", "risk_sections", ticker, risk),

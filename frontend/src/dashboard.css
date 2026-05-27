@@ -771,11 +771,16 @@ label {
 }
 
 .chart-card {
+  min-width: 0;
   min-height: 420px;
+  overflow: hidden;
 }
 
-.chart-card .dash-graph {
+.chart-card .react-echart {
+  width: 100%;
+  min-width: 0;
   height: 350px;
+  overflow: hidden;
 }
 
 .card-head {
@@ -1436,7 +1441,7 @@ label {
     min-height: 360px;
   }
 
-  .chart-card .dash-graph {
+  .chart-card .react-echart {
     height: 285px;
   }
 }

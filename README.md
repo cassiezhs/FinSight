@@ -4,7 +4,7 @@
 
 ![FinSight dashboard](title_img.png)
 
-FinSight is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
+FinSight is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-Q/10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
 
 The dashboard is centered on a practical question:
 
@@ -12,27 +12,27 @@ The dashboard is centered on a practical question:
 
 ## What The Dashboard Does
 
-- Compares selected 10-K MD&A and Risk sections with the previous available filing.
+- Compares selected 10-Q/10-K MD&A and Risk sections with the previous available filing.
 - Surfaces new and removed filing language, readability shifts, word-count changes, and narrative tone changes.
 - Produces a `Market Readout` that combines filing tone, event activity, price behavior, and post-filing reaction.
 - Computes a `Narrative vs Market Alignment` signal from:
   - filing tone change
   - new risk language count
-  - post-10-K excess return versus the S&P 500
+  - post-disclosure excess return versus the S&P 500
   - sentiment shift
   - market reaction label
 - Labels alignment as `Aligned`, `Narrative ahead of market`, `Market skeptical`, or `Risk confirmed`.
-- Marks 10-K and 8-K filing events on price charts.
+- Marks 10-Q, 10-K, and 8-K filing events on price charts.
 - Shows compact expandable 8-K cards with filing date, event type, impact label, short summary, and SEC filing details.
-- Calculates 1-day, 5-day, and 30-day post-10-K returns and excess returns versus the S&P 500.
+- Calculates 1-day, 5-day, and 30-day post-disclosure returns and excess returns versus the S&P 500.
 - Supports optional OpenAI change summaries and filing narrative labels.
 
 ## Data Sources
 
 - Daily stock prices and S&P 500 benchmark data from Yahoo Finance through `yfinance`.
 - SEC EDGAR metadata and filing documents for:
-  - 10-K MD&A sections
-  - 10-K Risk Factors sections
+  - 10-Q/10-K MD&A sections
+  - 10-Q/10-K Risk Factors sections
   - 8-K filing events and detail previews
 
 ## Tech Stack
@@ -138,6 +138,14 @@ Ingestion jobs read `FINSIGHT_TICKERS`.
 FINSIGHT_TICKERS=AAPL,MSFT,NVDA
 ```
 
+To load the current S&P 500 universe, set:
+
+```env
+FINSIGHT_TICKERS=sp500
+```
+
+`sp500` is resolved at ingestion time from the current S&P 500 constituents table, and symbols such as `BRK.B` are normalized to Yahoo Finance's `BRK-B` format.
+
 If the variable is omitted, the repo falls back to the default 100-ticker universe in `data_ingestiion/config.py`.
 
 The dashboard dropdown is database-driven. It shows tickers already present in `stock_prices`, even if a scheduled refresh job only updates a smaller ticker list.
@@ -156,7 +164,7 @@ Use `today` as the configured end date when a historical backfill should run thr
 FINSIGHT_END_DATE=today python3 data_ingestiion/load_to_db.py
 ```
 
-Include 10-K MD&A and Risk section extraction:
+Include 10-Q/10-K MD&A and Risk section extraction:
 
 ```bash
 FINSIGHT_LOAD_SEC=1 python3 data_ingestiion/load_to_db.py
@@ -186,17 +194,41 @@ By default it:
 Refresh current-year SEC data explicitly when needed:
 
 ```bash
-python3 -m data_ingestiion.daily_refresh --with-8k --with-10k-sections
+python3 -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections
 ```
 
 Equivalent environment switches:
 
 ```env
 FINSIGHT_DAILY_LOAD_8K=1
+FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS=1
+# Backward-compatible alias:
 FINSIGHT_DAILY_LOAD_10K_SECTIONS=1
 ```
 
-For GitHub Actions, store credentials in repository secrets. A daily job step can look like:
+The repository includes `.github/workflows/main.yml`, which runs this refresh daily and can also be triggered manually from GitHub Actions. It refreshes:
+
+- rolling stock prices and trading volume
+- S&P 500 benchmark prices
+- current-year 10-Q/10-K MD&A and Risk sections
+- current-year 8-K metadata
+
+For GitHub Actions, store at least these repository secrets:
+
+```text
+DATABASE_URL
+SEC_USER_AGENT
+```
+
+Optional secret:
+
+```text
+FINSIGHT_TICKERS
+```
+
+If `FINSIGHT_TICKERS` is not set, the workflow uses `sp500`.
+
+The workflow command is:
 
 ```yaml
 - name: Refresh FinSight data
@@ -205,7 +237,11 @@ For GitHub Actions, store credentials in repository secrets. A daily job step ca
     SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
     FINSIGHT_END_DATE: today
     FINSIGHT_DAILY_REFRESH_DAYS: 10
-  run: python3 -m data_ingestiion.daily_refresh --with-8k
+    FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS || 'sp500' }}
+    FINSIGHT_DAILY_LOAD_8K: "1"
+    FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS: "1"
+    FINSIGHT_LOAD_8K_DETAILS: "0"
+  run: python -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections
 ```
 
 ## Run The App

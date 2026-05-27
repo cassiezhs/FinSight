@@ -260,8 +260,8 @@ def get_cik(ticker: str) -> str | None:
             return str(item["cik_str"]).zfill(10)
     return None
 
-def get_10k_meta_for_year(cik: str, year: int) -> tuple[str | None, str | None]:
-    """Return (index.json URL, filingDate) for the company's 10-K filed in a given calendar year."""
+def get_filing_meta_for_year(cik: str, year: int, form_types: tuple[str, ...]) -> tuple[str | None, str | None, str | None]:
+    """Return (index.json URL, filingDate, formType) for the first matching form filed in a year."""
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     resp = requests.get(url, headers=UA, timeout=60)
     resp.raise_for_status()
@@ -271,12 +271,19 @@ def get_10k_meta_for_year(cik: str, year: int) -> tuple[str | None, str | None]:
     dates = data["filings"]["recent"]["filingDate"]
     accs = [a.replace("-", "") for a in data["filings"]["recent"]["accessionNumber"]]
 
+    wanted = set(form_types)
     for i, f in enumerate(forms):
-        if f == "10-K" and dates[i].startswith(str(year)):
+        if f in wanted and dates[i].startswith(str(year)):
             acc_no = accs[i]
             idx = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_no}/index.json"
-            return idx, dates[i]
-    return None, None
+            return idx, dates[i], f
+    return None, None, None
+
+
+def get_10k_meta_for_year(cik: str, year: int) -> tuple[str | None, str | None]:
+    """Return (index.json URL, filingDate) for the company's 10-K filed in a given calendar year."""
+    idx, filing_date, _ = get_filing_meta_for_year(cik, year, ("10-K",))
+    return idx, filing_date
 
 def get_10k_html_url(doc_index_url: str) -> str | None:
     resp = requests.get(doc_index_url, headers=UA, timeout=60)

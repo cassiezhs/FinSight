@@ -62,7 +62,7 @@ function TickerSearch({ tickers, value, onChange }) {
 
   const matches = useMemo(() => {
     const keyword = query.trim().toUpperCase();
-    if (!keyword) return tickers.slice(0, 12);
+    if (!keyword) return tickers;
     return tickers.filter((ticker) => ticker.toUpperCase().includes(keyword)).slice(0, 12);
   }, [query, tickers]);
 
@@ -148,6 +148,7 @@ function MarketReadout({ readout }) {
       <div className="readout-copy">
         <div className="readout-line"><span>Why it matters</span><p>{readout.why}</p></div>
         <div className="readout-line"><span>Key driver</span><p>{readout.driver}</p></div>
+        {readout.disclosure && <div className="readout-line"><span>Latest disclosure</span><p>{readout.disclosure.label}</p></div>}
         <div className="readout-line"><span>Watch next</span><p>{readout.watch}</p></div>
       </div>
       {readout.alignment ? <Alignment alignment={readout.alignment} /> : (
@@ -155,7 +156,7 @@ function MarketReadout({ readout }) {
           <div><span>Return</span><strong>{readout.facts.return}</strong></div>
           <div><span>Risk tone</span><strong>{readout.facts.risk_tone}</strong></div>
           <div><span>8-K impact</span><strong>{readout.facts.eight_k_impact}</strong></div>
-          <div><span>Alignment</span><strong>Needs prior 10-K</strong></div>
+          <div><span>Disclosure age</span><strong>{readout.facts.disclosure || "N/A"}</strong></div>
         </div>
       )}
     </div>
@@ -173,7 +174,7 @@ function Alignment({ alignment }) {
       <div className="alignment-factors">
         <div><span>Filing tone change</span><strong>{alignment.tone_change}</strong></div>
         <div><span>New risk language</span><strong>{alignment.new_risk_count}</strong></div>
-        <div><span>10-K excess return</span><strong>{formatPct(alignment.excess_return)}</strong></div>
+        <div><span>Disclosure excess return</span><strong>{formatPct(alignment.excess_return)}</strong></div>
         <div><span>Sentiment shift</span><strong>{alignment.sentiment_shift ?? "N/A"}</strong></div>
         <div><span>Market reaction</span><strong>{alignment.reaction}</strong></div>
       </div>
@@ -204,6 +205,9 @@ function Charts({ charts }) {
   const eventSeries = (type) => events
     .filter((event) => event.type === type && event.chart_date && event.close != null)
     .map((event) => ({ value: [event.chart_date, event.close], filingDate: event.date, details: event.details }));
+  const disclosureEvents = events
+    .filter((event) => ["10-Q", "10-K"].includes(event.type) && event.chart_date && event.close != null)
+    .map((event) => ({ value: [event.chart_date, event.close], filingDate: event.date, details: event.details, type: event.type }));
   const chartBase = {
     backgroundColor: "transparent",
     animationDuration: 450,
@@ -226,14 +230,14 @@ function Charts({ charts }) {
       { name: "Open", type: "line", smooth: true, showSymbol: false, data: prices.map((row) => [row.date, row.open]), lineStyle: { width: 3, color: "#8FFE01" } },
       { name: "Close", type: "line", smooth: true, showSymbol: false, data: prices.map((row) => [row.date, row.close]), lineStyle: { width: 3, color: "#7201FF" } },
       {
-        name: "10-K filing",
+        name: "10-Q / 10-K filing",
         type: "scatter",
         symbol: "diamond",
         symbolSize: 15,
         itemStyle: { color: "#000", borderColor: "#8FFE01", borderWidth: 2 },
-        data: eventSeries("10-K"),
-        markLine: { symbol: "none", silent: true, lineStyle: { color: "rgba(5,5,5,.28)", type: "dashed", width: 1 }, data: events.filter((event) => event.type === "10-K" && event.chart_date).map((event) => ({ xAxis: event.chart_date })) },
-        tooltip: { formatter: (params) => `<strong>10-K filing</strong><br/>Filing date: ${params.data.filingDate}<br/>${params.data.details || ""}<br/>Chart date: ${params.value[0]}` }
+        data: disclosureEvents,
+        markLine: { symbol: "none", silent: true, lineStyle: { color: "rgba(5,5,5,.28)", type: "dashed", width: 1 }, data: events.filter((event) => ["10-Q", "10-K"].includes(event.type) && event.chart_date).map((event) => ({ xAxis: event.chart_date })) },
+        tooltip: { formatter: (params) => `<strong>${params.data.type} filing</strong><br/>Filing date: ${params.data.filingDate}<br/>${params.data.details || ""}<br/>Chart date: ${params.value[0]}` }
       },
       {
         name: "8-K filing",
@@ -330,13 +334,13 @@ function EightKEvents({ events }) {
 }
 
 function Reactions({ reactions }) {
-  if (!reactions.length) return <Empty>No 10-K filings found for this ticker and date range.</Empty>;
+  if (!reactions.length) return <Empty>No 10-Q or 10-K filings found for this ticker and date range.</Empty>;
   return (
     <div className="reaction-list">
       {reactions.map((reaction) => (
         <article className="reaction-item" key={reaction.date}>
           <div className="reaction-head">
-            <div><span className="event-type">10-K</span><strong>{reaction.date}</strong><p className="reaction-subtitle">Sections: {reaction.sections}</p></div>
+            <div><span className="event-type">{reaction.form_type || "10-K"}</span><strong>{reaction.date}</strong><p className="reaction-subtitle">Sections: {reaction.sections}</p></div>
             <a className="event-link" href={reaction.url} rel="noreferrer" target="_blank">SEC filing</a>
           </div>
           <div className={`reaction-signal ${reaction.tone}`}>{reaction.label}</div>
@@ -358,8 +362,8 @@ function kpiValue(kpis, label, fallback) {
 }
 
 function FilingSections({ sections, kpis }) {
-  const mdnaSentiment = kpiValue(kpis, "MD&A Sentiment", sections.mdna.sentiment);
-  const riskSentiment = kpiValue(kpis, "Risk Sentiment", sections.risk.sentiment);
+  const mdnaSentiment = kpiValue(kpis, "MD&A Tone", sections.mdna.sentiment);
+  const riskSentiment = kpiValue(kpis, "Risk Disclosure", sections.risk.sentiment);
 
   return (
     <>
@@ -439,7 +443,7 @@ export default function App() {
     <main className="page-shell">
       <header className="topbar" data-parallax-depth="4"><div className="brand"><div className="brand-mark">F</div><span>FinSight</span></div><div className="topbar-action">React + FastAPI</div></header>
       <section className="hero-card">
-        <div className="hero-meta" data-parallax-depth="10"><span className="eyebrow">Market pulse</span><h1>Narrative vs. Market</h1><p>Analyzing how 10-K filing language aligns with stock price movement, market reaction, and risk signals.</p></div>
+        <div className="hero-meta" data-parallax-depth="10"><span className="eyebrow">Market pulse</span><h1>Narrative vs. Market</h1><p>Analyzing how recent 10-Q/10-K language aligns with stock price movement, event reactions, and risk signals.</p></div>
         <div data-parallax-depth="18">
           <Kpis kpis={dashboard?.kpis || []} loading={loading || !dashboard} />
         </div>
@@ -453,12 +457,12 @@ export default function App() {
       {dashboardError && <Empty>{dashboardError}</Empty>}
       {loading && !dashboard && <section className="card loading-card"><Loading /></section>}
       {dashboard && <>
-        <section className="card readout-card"><CardHead eyebrow="Final insight" title="Market Readout" note="Price action, filing tone, 10-K reaction, and 8-K event impact in one view." /><MarketReadout readout={dashboard.market_readout} /></section>
+        <section className="card readout-card"><CardHead eyebrow="Evidence-weighted" title="Market Readout" note="Price action, latest disclosure freshness, short-window reaction, and 8-K event impact in one view." /><MarketReadout readout={dashboard.market_readout} /></section>
         {dashboard.price_coverage?.warning && <Empty>{dashboard.price_coverage.warning}</Empty>}
         <Charts charts={dashboard.charts} />
-        <section className="card comparison-card"><CardHead eyebrow="Year over year" title="Filing Comparison" note="Selected filing versus the previous available 10-K language." /><Comparison sections={dashboard.comparison} /></section>
+        <section className="card comparison-card"><CardHead eyebrow="Filing history" title="Filing Comparison" note="Selected periodic filing versus the previous available filing language." /><Comparison sections={dashboard.comparison} /></section>
         <section className="card events-card"><CardHead eyebrow="Event detail" title="8-K Events" /><EightKEvents events={dashboard.eight_k_events} /></section>
-        <section className="card reaction-card"><CardHead eyebrow="Market reaction" title="Price Reaction After 10-K" note="Returns anchor on the next trading day and compare with the S&P 500." /><Reactions reactions={dashboard.reactions} /></section>
+        <section className="card reaction-card"><CardHead eyebrow="Market reaction" title="Price Reaction After Disclosure" note="Returns anchor on the next trading day after 10-Q or 10-K filings and compare with the S&P 500." /><Reactions reactions={dashboard.reactions} /></section>
         <FilingSections sections={dashboard.sections} kpis={dashboard.kpis || []} />
       </>}
     </main>

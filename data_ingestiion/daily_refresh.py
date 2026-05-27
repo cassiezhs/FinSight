@@ -42,6 +42,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Refresh FinSight market data and optional SEC filing data for the latest period."
     )
+    periodic_default = (
+        env_enabled("FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS", default=False)
+        or env_enabled("FINSIGHT_DAILY_LOAD_10K_SECTIONS", default=False)
+    )
     parser.add_argument(
         "--end-date",
         default=settings.end_date,
@@ -62,8 +66,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--with-10k-sections",
         action=argparse.BooleanOptionalAction,
-        default=env_enabled("FINSIGHT_DAILY_LOAD_10K_SECTIONS", default=False),
-        help="Refresh current-year 10-K MD&A and Risk sections.",
+        default=periodic_default,
+        dest="with_periodic_sections",
+        help="Refresh current-year 10-Q/10-K MD&A and Risk sections.",
+    )
+    parser.add_argument(
+        "--with-periodic-sections",
+        action=argparse.BooleanOptionalAction,
+        default=periodic_default,
+        dest="with_periodic_sections",
+        help="Refresh current-year 10-Q/10-K MD&A and Risk sections.",
     )
     return parser.parse_args()
 
@@ -79,13 +91,13 @@ def refresh_daily_data() -> None:
     print(f"Market window: {market_start_date} through {end_date}")
     market_rows, sp500_rows = load_market_data(engine, market_start_date, end_date)
 
-    if args.with_10k_sections:
-        print(f"Refreshing 10-K sections filed in {end_year}")
+    if args.with_periodic_sections:
+        print(f"Refreshing 10-Q/10-K sections filed in {end_year}")
         risk_rows, mdna_rows = collect_sec_sections(TICKERS, end_year, end_year)
         upsert_sections(risk_rows, engine, "risk_sections")
         upsert_sections(mdna_rows, engine, "mdna_sections")
     else:
-        print("Skipping 10-K sections. Pass --with-10k-sections to refresh them.")
+        print("Skipping 10-Q/10-K sections. Pass --with-10k-sections to refresh them.")
 
     if args.with_8k:
         print(f"Refreshing 8-K filings filed in {end_year}")

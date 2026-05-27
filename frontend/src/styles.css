@@ -98,10 +98,6 @@ label.field {
   min-height: 180px;
 }
 
-.react-echart {
-  height: 350px;
-}
-
 .filing-text {
   max-height: 420px;
   overflow: auto;
