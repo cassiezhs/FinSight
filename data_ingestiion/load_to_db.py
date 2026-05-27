@@ -132,12 +132,39 @@ def get_max_market_date(engine) -> str | None:
     return pd.to_datetime(result).date().isoformat()
 
 
-def get_daily_start_date(engine, fallback_start_date: str, refresh_days: int) -> str:
-    latest_date = get_max_market_date(engine)
-    if latest_date is None:
+def get_ticker_latest_market_dates(engine) -> dict[str, str]:
+    inspector = inspect(engine)
+    if not inspector.has_table("stock_prices", schema=DB_SCHEMA):
+        return {}
+
+    query = text(f'SELECT ticker, MAX("Date") AS latest_date FROM {_qualified("stock_prices")} GROUP BY ticker')
+    with engine.begin() as conn:
+        rows = conn.execute(query).mappings().all()
+
+    return {
+        str(row["ticker"]).upper(): pd.to_datetime(row["latest_date"]).date().isoformat()
+        for row in rows
+        if row["ticker"] and row["latest_date"] is not None
+    }
+
+
+def get_daily_start_date(
+    engine,
+    fallback_start_date: str,
+    refresh_days: int,
+    tickers: tuple[str, ...] | None = None,
+) -> str:
+    latest_dates = get_ticker_latest_market_dates(engine)
+    if not latest_dates:
         return fallback_start_date
 
-    start = datetime.strptime(latest_date, "%Y-%m-%d").date() - timedelta(days=refresh_days)
+    expected_tickers = {ticker.upper() for ticker in (tickers or latest_dates.keys())}
+    covered_dates = [latest_dates[ticker] for ticker in expected_tickers if ticker in latest_dates]
+    if not covered_dates:
+        return fallback_start_date
+
+    earliest_latest_date = min(covered_dates)
+    start = datetime.strptime(earliest_latest_date, "%Y-%m-%d").date() - timedelta(days=refresh_days)
     return start.isoformat()
 
 
@@ -378,7 +405,7 @@ if __name__ == "__main__":
     end_date = resolve_date(args.end_date)
     start_date = args.start_date
     if args.daily:
-        start_date = get_daily_start_date(engine, settings.start_date, args.refresh_days)
+        start_date = get_daily_start_date(engine, settings.start_date, args.refresh_days, TICKERS)
 
     # --- 1. Stock & Benchmark ---
     combined_df, sp500_df = load_market_data(engine, start_date, end_date)

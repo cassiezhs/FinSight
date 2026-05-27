@@ -38,6 +38,7 @@ select {
 }
 
 select,
+.ticker-search input,
 .native-range input {
   min-height: 48px;
   width: 100%;
@@ -51,6 +52,10 @@ select,
 
 select {
   appearance: auto;
+}
+
+.ticker-search input {
+  appearance: none;
 }
 
 .native-range {
@@ -97,8 +102,7 @@ label.field {
   height: 350px;
 }
 
-.filing-text,
-.summary-box {
+.filing-text {
   max-height: 420px;
   overflow: auto;
   padding: 14px;
@@ -109,11 +113,6 @@ label.field {
   background: rgba(255, 255, 255, 0.68);
   font-size: 14px;
   line-height: 1.65;
-}
-
-.summary-box {
-  max-height: 150px;
-  font-weight: 750;
 }
 
 .filing-date {

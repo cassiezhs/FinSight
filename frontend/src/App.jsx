@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import { fetchBootstrap, fetchDashboard } from "./api";
 
@@ -49,6 +49,71 @@ function Loading({ label = "Loading current selection" }) {
 
 function Empty({ children }) {
   return <div className="empty-state">{children}</div>;
+}
+
+function TickerSearch({ tickers, value, onChange }) {
+  const [query, setQuery] = useState(value);
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    setQuery(value);
+  }, [value]);
+
+  const matches = useMemo(() => {
+    const keyword = query.trim().toUpperCase();
+    if (!keyword) return tickers.slice(0, 12);
+    return tickers.filter((ticker) => ticker.toUpperCase().includes(keyword)).slice(0, 12);
+  }, [query, tickers]);
+
+  const selectTicker = (ticker) => {
+    setQuery(ticker);
+    setOpen(false);
+    onChange(ticker);
+  };
+
+  const handleChange = (event) => {
+    const nextQuery = event.target.value.toUpperCase();
+    setQuery(nextQuery);
+    setOpen(true);
+    if (tickers.includes(nextQuery)) onChange(nextQuery);
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === "Enter" && matches.length) {
+      event.preventDefault();
+      selectTicker(matches[0]);
+    }
+    if (event.key === "Escape") {
+      setOpen(false);
+      inputRef.current?.blur();
+    }
+  };
+
+  return (
+    <div className="ticker-search">
+      <input
+        aria-label="Search ticker"
+        autoComplete="off"
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={handleChange}
+        onFocus={() => setOpen(true)}
+        onKeyDown={handleKeyDown}
+        placeholder="Search ticker"
+        ref={inputRef}
+        value={query}
+      />
+      {open && (
+        <div className="ticker-menu" role="listbox">
+          {matches.length ? matches.map((ticker) => (
+            <button key={ticker} onMouseDown={() => selectTicker(ticker)} type="button">
+              {ticker}
+            </button>
+          )) : <div className="ticker-empty">No ticker found</div>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Kpis({ kpis, loading }) {
@@ -288,10 +353,17 @@ function ReactionMetric({ label, result }) {
   return <div className="reaction-metric"><span>{label}</span><strong>{formatPct(result.stock)}</strong><em>vs S&amp;P {formatPct(result.excess)}</em></div>;
 }
 
-function FilingSections({ sections }) {
+function kpiValue(kpis, label, fallback) {
+  return kpis.find((item) => item.label === label)?.value || fallback;
+}
+
+function FilingSections({ sections, kpis }) {
+  const mdnaSentiment = kpiValue(kpis, "MD&A Sentiment", sections.mdna.sentiment);
+  const riskSentiment = kpiValue(kpis, "Risk Sentiment", sections.risk.sentiment);
+
   return (
     <>
-      <div className="sentiment-tag">Sentiment - MD&amp;A: {sections.mdna.sentiment} | Risk: {sections.risk.sentiment}</div>
+      <div className="sentiment-tag">Sentiment - MD&amp;A: {mdnaSentiment} | Risk: {riskSentiment}</div>
       <div className="grid ai-summary-grid">
         <SummaryPanel title="MD&A Summary" summary={sections.mdna.summary} />
         <SummaryPanel title="Risk Summary" summary={sections.risk.summary} />
@@ -320,8 +392,10 @@ function TextPanel({ eyebrow, title, section }) {
 function SummaryPanel({ title, summary }) {
   return (
     <section className="card summary-card">
-      <CardHead eyebrow="AI summary" title={title} />
-      <div className="summary-box">{summary || "No summary available."}</div>
+      <div className="ai-change-summary">
+        <div className="ai-change-head"><span>AI summary</span><strong>{title}</strong></div>
+        <div className="ai-change-body">{summary || "No summary available."}</div>
+      </div>
     </section>
   );
 }
@@ -371,7 +445,7 @@ export default function App() {
         </div>
       </section>
       <section className="controls-card card">
-        <label className="field">Select Ticker<select value={selection.ticker} onChange={(event) => setSelection((value) => ({ ...value, ticker: event.target.value }))}>{(bootstrap?.tickers || []).map((ticker) => <option key={ticker}>{ticker}</option>)}</select></label>
+        <label className="field">Select Ticker<TickerSearch tickers={bootstrap?.tickers || []} value={selection.ticker} onChange={(ticker) => setSelection((value) => ({ ...value, ticker }))} /></label>
         <div className="field date-field"><label>Select Date Range</label><div className="native-range"><input type="date" min={bootstrap?.start_date} max={bootstrap?.end_date} value={selection.start} onChange={(event) => setSelection((value) => ({ ...value, start: event.target.value }))} /><input type="date" min={bootstrap?.start_date} max={bootstrap?.end_date} value={selection.end} onChange={(event) => setSelection((value) => ({ ...value, end: event.target.value }))} /></div></div>
         <div className="field range-preset-field"><label>Quick Ranges</label><div className="range-presets">{presets.map(([label, value]) => <button key={value} onClick={() => applyPreset(value)} type="button">{label}</button>)}</div></div>
       </section>
@@ -380,11 +454,12 @@ export default function App() {
       {loading && !dashboard && <section className="card loading-card"><Loading /></section>}
       {dashboard && <>
         <section className="card readout-card"><CardHead eyebrow="Final insight" title="Market Readout" note="Price action, filing tone, 10-K reaction, and 8-K event impact in one view." /><MarketReadout readout={dashboard.market_readout} /></section>
+        {dashboard.price_coverage?.warning && <Empty>{dashboard.price_coverage.warning}</Empty>}
         <Charts charts={dashboard.charts} />
         <section className="card comparison-card"><CardHead eyebrow="Year over year" title="Filing Comparison" note="Selected filing versus the previous available 10-K language." /><Comparison sections={dashboard.comparison} /></section>
         <section className="card events-card"><CardHead eyebrow="Event detail" title="8-K Events" /><EightKEvents events={dashboard.eight_k_events} /></section>
         <section className="card reaction-card"><CardHead eyebrow="Market reaction" title="Price Reaction After 10-K" note="Returns anchor on the next trading day and compare with the S&P 500." /><Reactions reactions={dashboard.reactions} /></section>
-        <FilingSections sections={dashboard.sections} />
+        <FilingSections sections={dashboard.sections} kpis={dashboard.kpis || []} />
       </>}
     </main>
   );

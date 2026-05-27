@@ -73,7 +73,7 @@ def refresh_daily_data() -> None:
     engine = get_engine()
     end_date = resolve_date(args.end_date)
     end_year = datetime.strptime(end_date, "%Y-%m-%d").year
-    market_start_date = get_daily_start_date(engine, settings.start_date, args.refresh_days)
+    market_start_date = get_daily_start_date(engine, settings.start_date, args.refresh_days, TICKERS)
 
     print(f"Daily refresh tickers: {len(TICKERS)}")
     print(f"Market window: {market_start_date} through {end_date}")

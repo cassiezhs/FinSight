@@ -679,6 +679,45 @@ def serialize_charts(prices: pd.DataFrame, events: pd.DataFrame) -> dict[str, An
     return {"prices": price_rows, "events": event_rows}
 
 
+def price_coverage(prices: pd.DataFrame, start_date: str, end_date: str) -> dict[str, Any]:
+    expected_days = None
+    if inspect(engine()).has_table("sp500_index", schema=settings.db_schema):
+        expected = pd.read_sql(
+            'SELECT COUNT(*) AS trading_days FROM sp500_index WHERE "Date" >= %s::date AND "Date" <= %s::date',
+            engine(),
+            params=(start_date, end_date),
+        )
+        if not expected.empty:
+            expected_days = int(expected.loc[0, "trading_days"])
+    if not expected_days:
+        expected_days = len(pd.bdate_range(start=start_date, end=end_date))
+
+    available_days = len(prices)
+    ratio = available_days / expected_days if expected_days else 1
+    max_gap_days = None
+    if len(prices) > 1:
+        max_gap_days = int(prices["Date"].diff().dt.days.max())
+
+    warning = None
+    if expected_days and ratio < 0.8:
+        warning = (
+            f"Stock price data is sparse for this ticker and date range: "
+            f"{available_days} of about {expected_days} trading days are available."
+        )
+    elif max_gap_days and max_gap_days > 10:
+        warning = f"Stock price data has a {max_gap_days}-day gap inside the selected range."
+
+    return {
+        "available_days": available_days,
+        "expected_days": expected_days,
+        "coverage_ratio": round(ratio, 3) if expected_days else None,
+        "start_date": date_text(prices.iloc[0]["Date"]) if not prices.empty else None,
+        "end_date": date_text(prices.iloc[-1]["Date"]) if not prices.empty else None,
+        "max_gap_days": max_gap_days,
+        "warning": warning,
+    }
+
+
 def market_readout(prices: pd.DataFrame, mdna: pd.Series | None, risk: pd.Series | None, events_8k: list[dict[str, Any]], comparison_alignment: dict[str, Any] | None, excess: float | None) -> dict[str, Any]:
     range_return = volatility = None
     if not prices.empty:
@@ -739,6 +778,7 @@ def build_dashboard(ticker: str, start_date: str, end_date: str) -> dict[str, An
         "ticker": ticker,
         "range": {"start": start_date, "end": end_date, "filing_years": year_label},
         "kpis": build_kpis(ticker, start_date, end_date, prices, events, mdna, risk),
+        "price_coverage": price_coverage(prices, start_date, end_date),
         "charts": serialize_charts(prices, events),
         "market_readout": market_readout(prices, mdna, risk, eight_k, alignment_signal, excess),
         "comparison": [
