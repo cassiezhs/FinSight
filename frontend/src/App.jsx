@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
-import { fetchBootstrap, fetchDashboard } from "./api";
+import { fetchBootstrap, fetchDashboard, subscribeFilingAlert } from "./api";
 
 const presets = [
   ["YTD", "ytd"],
@@ -156,9 +156,61 @@ function MarketReadout({ readout }) {
           <div><span>Return</span><strong>{readout.facts.return}</strong></div>
           <div><span>Risk tone</span><strong>{readout.facts.risk_tone}</strong></div>
           <div><span>8-K impact</span><strong>{readout.facts.eight_k_impact}</strong></div>
+          <div><span>Revenue</span><strong>{readout.facts.revenue || "N/A"}</strong></div>
+          <div><span>Gross margin</span><strong>{readout.facts.gross_margin || "N/A"}</strong></div>
+          <div><span>Cash flow</span><strong>{readout.facts.cash_flow || "N/A"}</strong></div>
           <div><span>Disclosure age</span><strong>{readout.facts.disclosure || "N/A"}</strong></div>
         </div>
       )}
+    </div>
+  );
+}
+
+function FinancialStatements({ financials }) {
+  if (!financials || financials.status !== "ready") {
+    return <Empty>{financials?.note || "No financial statement highlights available."}</Empty>;
+  }
+  return (
+    <div className="financial-grid">
+      <div className="financial-source">
+        <span>{financials.source.form_type}</span>
+        <strong>{financials.source.date}</strong>
+        <a className="event-link secondary" href={financials.source.url} rel="noreferrer" target="_blank">Source filing</a>
+      </div>
+      <div className="financial-metrics">
+        {financials.metrics.map((metric) => (
+          <div className={`financial-metric ${metric.tone}`} key={metric.label}>
+            <span>{metric.label}</span>
+            <strong>{metric.value}</strong>
+            <p>{metric.detail}</p>
+            {metric.delta != null && <em>{formatPct(metric.delta)}</em>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DecisionReadiness({ decision }) {
+  if (!decision) return <Empty>No decision readiness available.</Empty>;
+  return (
+    <div className="decision-grid">
+      <div className={`decision-status ${decision.tone}`}>
+        <span>Readiness</span>
+        <strong>{decision.status}</strong>
+        <p>{decision.summary}</p>
+        <em>{decision.threshold ? `${formatPct(decision.gap_pct)} vs threshold` : "No threshold set"}</em>
+      </div>
+      <div className="decision-checks">
+        {decision.checks.map((check) => (
+          <div className={`decision-check ${check.status}`} key={check.label}>
+            <span>{check.label}</span>
+            <strong>{check.status}</strong>
+            <p>{check.detail}</p>
+          </div>
+        ))}
+      </div>
+      <div className="decision-note">{decision.disclaimer}</div>
     </div>
   );
 }
@@ -272,7 +324,7 @@ function Comparison({ sections }) {
           <div className="comparison-section-head">
             <div>
               <span className="event-type">{section.name}</span>
-              <h3>{section.current_date} vs {section.previous_date}</h3>
+              <h3>{section.current_form_type || "Filing"} {section.current_date} vs {section.previous_form_type || "Filing"} {section.previous_date}</h3>
               <div className="comparison-links">
                 <a className="event-link" href={section.current_url} rel="noreferrer" target="_blank">Current filing</a>
                 <a className="event-link secondary" href={section.previous_url} rel="noreferrer" target="_blank">Previous filing</a>
@@ -320,6 +372,14 @@ function EightKEvents({ events }) {
             <span className={`impact-label ${event.impact_tone}`}>{event.impact}</span>
           </div>
           <p className="event-summary">{event.summary}</p>
+          {event.horizons && (
+            <>
+              <div className={`reaction-signal ${event.reaction_tone || "neutral"}`}>{event.reaction_label || "Insufficient data"}</div>
+              <div className="reaction-grid event-reaction-grid">
+                {["1", "5", "30"].map((horizon) => <ReactionMetric key={horizon} label={`${horizon}D`} result={event.horizons[horizon]} />)}
+              </div>
+            </>
+          )}
           <details className="event-details">
             <summary>Details</summary>
             <div className="event-items">{event.items}</div>
@@ -404,9 +464,41 @@ function SummaryPanel({ title, summary }) {
   );
 }
 
+function AlertSignup({ ticker }) {
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setStatus("");
+    subscribeFilingAlert({ email, ticker }).then(() => {
+      setStatus(`Subscribed ${email} to ${ticker} filing alerts.`);
+      setEmail("");
+    }).catch((err) => {
+      setError(err.message);
+    }).finally(() => setSaving(false));
+  };
+
+  return (
+    <section className="card alert-card">
+      <CardHead eyebrow="Email alerts" title="Filing Alerts" note="Get an email when a new 8-K, 10-Q, or 10-K is detected for the selected ticker." />
+      <form className="alert-form" onSubmit={submit}>
+        <label className="field">Email<input autoComplete="email" placeholder="you@example.com" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+        <button disabled={saving || !ticker} type="submit">{saving ? "Saving..." : `Alert me for ${ticker || "ticker"}`}</button>
+      </form>
+      {status && <p className="alert-status">{status}</p>}
+      {error && <p className="alert-error">{error}</p>}
+    </section>
+  );
+}
+
 export default function App() {
   const [bootstrap, setBootstrap] = useState(null);
-  const [selection, setSelection] = useState({ ticker: "", start: "", end: "" });
+  const [selection, setSelection] = useState({ ticker: "", start: "", end: "", threshold: "" });
   const [dashboard, setDashboard] = useState(null);
   const [bootError, setBootError] = useState("");
   const [dashboardError, setDashboardError] = useState("");
@@ -416,7 +508,7 @@ export default function App() {
     const controller = new AbortController();
     fetchBootstrap(controller.signal).then((data) => {
       setBootstrap(data);
-      setSelection({ ticker: data.default_ticker || "", start: data.start_date || "", end: data.end_date || "" });
+      setSelection({ ticker: data.default_ticker || "", start: data.default_start_date || data.start_date || "", end: data.end_date || "", threshold: "" });
     }).catch((error) => {
       if (error.name !== "AbortError") setBootError(error.message);
     });
@@ -451,13 +543,17 @@ export default function App() {
       <section className="controls-card card">
         <label className="field">Select Ticker<TickerSearch tickers={bootstrap?.tickers || []} value={selection.ticker} onChange={(ticker) => setSelection((value) => ({ ...value, ticker }))} /></label>
         <div className="field date-field"><label>Select Date Range</label><div className="native-range"><input type="date" min={bootstrap?.start_date} max={bootstrap?.end_date} value={selection.start} onChange={(event) => setSelection((value) => ({ ...value, start: event.target.value }))} /><input type="date" min={bootstrap?.start_date} max={bootstrap?.end_date} value={selection.end} onChange={(event) => setSelection((value) => ({ ...value, end: event.target.value }))} /></div></div>
+        <label className="field threshold-field">Personal Threshold<input min="0" placeholder="Optional price" step="0.01" type="number" value={selection.threshold} onChange={(event) => setSelection((value) => ({ ...value, threshold: event.target.value }))} /></label>
         <div className="field range-preset-field"><label>Quick Ranges</label><div className="range-presets">{presets.map(([label, value]) => <button key={value} onClick={() => applyPreset(value)} type="button">{label}</button>)}</div></div>
       </section>
+      <AlertSignup ticker={selection.ticker} />
       {invalidRange && <Empty>Start date must be on or before end date.</Empty>}
       {dashboardError && <Empty>{dashboardError}</Empty>}
       {loading && !dashboard && <section className="card loading-card"><Loading /></section>}
       {dashboard && <>
         <section className="card readout-card"><CardHead eyebrow="Evidence-weighted" title="Market Readout" note="Price action, latest disclosure freshness, short-window reaction, and 8-K event impact in one view." /><MarketReadout readout={dashboard.market_readout} /></section>
+        <section className="card decision-card"><CardHead eyebrow="Decision aid" title="Decision Readiness" note="Compares your personal threshold with market, filing, and financial statement checks." /><DecisionReadiness decision={dashboard.decision_readiness} /></section>
+        <section className="card financial-card"><CardHead eyebrow="Statement pulse" title="Financial Statements" note="Revenue, margin, cash flow, and debt/liquidity signals extracted from the latest periodic filing." /><FinancialStatements financials={dashboard.financials} /></section>
         {dashboard.price_coverage?.warning && <Empty>{dashboard.price_coverage.warning}</Empty>}
         <Charts charts={dashboard.charts} />
         <section className="card comparison-card"><CardHead eyebrow="Filing history" title="Filing Comparison" note="Selected periodic filing versus the previous available filing language." /><Comparison sections={dashboard.comparison} /></section>

@@ -224,7 +224,7 @@ def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, .
                     time.sleep(0.25)  # polite to SEC servers
 
                     risk = extract_risk_from_main_html(html_url)
-                    mdna = extract_mdna_from_main_html(html_url)
+                    mdna = extract_mdna_from_main_html(html_url, found_form or form_type)
                     company_name = None
                     if "Alphabet" in risk or "Alphabet" in mdna:
                         company_name = "Alphabet Inc."
@@ -263,12 +263,36 @@ def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, .
     return df_risk, df_mdna
 
 def upsert_sections(df, engine, table):
-    """Upsert section data by (cik, filing_date, chunk_index)."""
+    """Upsert section data by (cik, filing_date, form_type, chunk_index)."""
     if df.empty:
         print(f"⚠️ No rows to insert for {table}")
         return
     ensure_section_table_columns(engine, table)
-    append_on_conflict_do_nothing(df, table, engine, ["cik", "filing_date", "form_type", "chunk_index"])
+    key_columns = ["cik", "filing_date", "form_type", "chunk_index"]
+    _ensure_unique_index(engine, table, key_columns)
+
+    tmp_name = f"_tmp_{table}_{uuid.uuid4().hex[:8]}"
+    df.to_sql(tmp_name, engine, schema=DB_SCHEMA, if_exists="fail", index=False)
+
+    cols = list(df.columns)
+    col_sql = ", ".join(_quote_identifier(c) for c in cols)
+    conflict_sql = ", ".join(_quote_identifier(c) for c in key_columns)
+    update_cols = [c for c in cols if c not in key_columns]
+    update_sql = ", ".join(
+        f"{_quote_identifier(c)} = EXCLUDED.{_quote_identifier(c)}"
+        for c in update_cols
+    )
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(text(
+                f"INSERT INTO {_qualified(table)} ({col_sql}) "
+                f"SELECT {col_sql} FROM {_qualified(tmp_name)} "
+                f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {update_sql}"
+            ))
+        print(f"✅ Upserted {result.rowcount} rows into {DB_SCHEMA}.{table}")
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text(f"DROP TABLE IF EXISTS {_qualified(tmp_name)}"))
 
 
 def ensure_section_table_columns(engine, table_name: str):

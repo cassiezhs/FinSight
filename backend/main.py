@@ -6,6 +6,7 @@ import os
 from datetime import date
 from pathlib import Path
 
+from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -18,9 +19,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+class AlertSubscriptionRequest(BaseModel):
+    email: str
+    ticker: str
 
 
 @app.get("/api/health")
@@ -43,15 +49,30 @@ def dashboard(
     ticker: str = Query(min_length=1, max_length=16),
     start: date = Query(),
     end: date = Query(),
+    threshold: float | None = Query(default=None, gt=0),
 ):
     if start > end:
         raise HTTPException(status_code=422, detail="start must be on or before end")
     try:
         from backend.dashboard_service import build_dashboard
 
-        return build_dashboard(ticker.upper(), start.isoformat(), end.isoformat())
+        return build_dashboard(ticker.upper(), start.isoformat(), end.isoformat(), threshold)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Dashboard query failed: {exc}") from exc
+
+
+@app.post("/api/alerts/subscribe")
+def subscribe_alert(request: AlertSubscriptionRequest):
+    try:
+        from data_ingestiion.alerts import subscribe_alert as save_subscription
+        from data_ingestiion.db import get_engine
+
+        subscription = save_subscription(get_engine(), request.email, request.ticker)
+        return {"status": "subscribed", "subscription": subscription}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Alert subscription failed: {exc}") from exc
 
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"

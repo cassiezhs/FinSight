@@ -18,6 +18,7 @@ try:
         upsert_8k_filings,
         upsert_sections,
     )
+    from .alerts import new_8k_filings, new_periodic_filings, send_filing_alerts
 except ImportError:
     from config import TICKERS, resolve_date, settings
     from db import get_engine
@@ -29,6 +30,7 @@ except ImportError:
         upsert_8k_filings,
         upsert_sections,
     )
+    from alerts import new_8k_filings, new_periodic_filings, send_filing_alerts
 
 
 def env_enabled(name: str, default: bool = False) -> bool:
@@ -77,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         dest="with_periodic_sections",
         help="Refresh current-year 10-Q/10-K MD&A and Risk sections.",
     )
+    parser.add_argument(
+        "--send-alerts",
+        action=argparse.BooleanOptionalAction,
+        default=env_enabled("FINSIGHT_SEND_ALERTS", default=False),
+        help="Send email alerts for newly discovered 8-K/10-Q/10-K filings.",
+    )
     return parser.parse_args()
 
 
@@ -90,10 +98,12 @@ def refresh_daily_data() -> None:
     print(f"Daily refresh tickers: {len(TICKERS)}")
     print(f"Market window: {market_start_date} through {end_date}")
     market_rows, sp500_rows = load_market_data(engine, market_start_date, end_date)
+    alert_filings = []
 
     if args.with_periodic_sections:
         print(f"Refreshing 10-Q/10-K sections filed in {end_year}")
         risk_rows, mdna_rows = collect_sec_sections(TICKERS, end_year, end_year)
+        alert_filings.extend(new_periodic_filings(risk_rows, mdna_rows, engine))
         upsert_sections(risk_rows, engine, "risk_sections")
         upsert_sections(mdna_rows, engine, "mdna_sections")
     else:
@@ -102,6 +112,7 @@ def refresh_daily_data() -> None:
     if args.with_8k:
         print(f"Refreshing 8-K filings filed in {end_year}")
         eight_k_rows = collect_8k_filings(TICKERS, end_year, end_year)
+        alert_filings.extend(new_8k_filings(eight_k_rows, engine))
         upsert_8k_filings(eight_k_rows, engine)
     else:
         print("Skipping 8-K filings. Pass --with-8k to refresh them.")
@@ -109,6 +120,10 @@ def refresh_daily_data() -> None:
     print("Daily refresh complete.")
     print(f"Fetched stock rows: {len(market_rows)}")
     print(f"Fetched S&P 500 rows: {len(sp500_rows)}")
+    if args.send_alerts:
+        send_filing_alerts(engine, alert_filings)
+    else:
+        print("Skipping email alerts. Pass --send-alerts or set FINSIGHT_SEND_ALERTS=1.")
 
 
 if __name__ == "__main__":

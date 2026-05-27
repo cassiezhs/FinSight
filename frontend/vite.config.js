@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8000"
+      "/api": process.env.VITE_API_TARGET || "http://127.0.0.1:8000"
     },
     fs: {
       allow: [".."]

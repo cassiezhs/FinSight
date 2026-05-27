@@ -197,6 +197,26 @@ Refresh current-year SEC data explicitly when needed:
 python3 -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections
 ```
 
+Send email alerts for newly discovered 8-K, 10-Q, or 10-K filings:
+
+```bash
+python3 -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections --send-alerts
+```
+
+Users can subscribe from the dashboard by entering an email address for the selected ticker. Alert delivery requires SMTP configuration:
+
+```env
+FINSIGHT_SEND_ALERTS=1
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_TLS=1
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM=alerts@example.com
+```
+
+If SMTP is not configured, the refresh job skips email delivery and logs that alerts were not sent.
+
 Equivalent environment switches:
 
 ```env
@@ -204,6 +224,7 @@ FINSIGHT_DAILY_LOAD_8K=1
 FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS=1
 # Backward-compatible alias:
 FINSIGHT_DAILY_LOAD_10K_SECTIONS=1
+FINSIGHT_SEND_ALERTS=1
 ```
 
 The repository includes `.github/workflows/main.yml`, which runs this refresh daily and can also be triggered manually from GitHub Actions. It refreshes:
@@ -224,6 +245,12 @@ Optional secret:
 
 ```text
 FINSIGHT_TICKERS
+SMTP_HOST
+SMTP_PORT
+SMTP_TLS
+SMTP_USERNAME
+SMTP_PASSWORD
+SMTP_FROM
 ```
 
 If `FINSIGHT_TICKERS` is not set, the workflow uses `sp500`.

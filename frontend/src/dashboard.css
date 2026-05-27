@@ -200,7 +200,7 @@ body {
   position: relative;
   z-index: 20;
   display: grid;
-  grid-template-columns: minmax(220px, 0.42fr) minmax(340px, 0.8fr) minmax(270px, 0.58fr);
+  grid-template-columns: minmax(190px, 0.38fr) minmax(300px, 0.72fr) minmax(160px, 0.3fr) minmax(250px, 0.52fr);
   gap: 16px;
   align-items: end;
   padding: 16px;
@@ -222,6 +222,7 @@ body {
 }
 
 .readout-stance {
+  min-width: 0;
   min-height: 170px;
   padding: 18px;
   display: flex;
@@ -243,11 +244,13 @@ body {
 }
 
 .readout-stance strong {
+  max-width: 100%;
   color: var(--ink);
-  font-size: clamp(30px, 4.2vw, 52px);
-  line-height: 0.92;
+  font-size: clamp(28px, 3vw, 42px);
+  line-height: 1;
   font-weight: 700;
   letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 
 .readout-stance em {
@@ -312,6 +315,205 @@ body {
   line-height: 1.05;
   font-weight: 850;
   overflow-wrap: anywhere;
+}
+
+.financial-card {
+  padding: 18px;
+}
+
+.financial-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.22fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.financial-source,
+.financial-metric {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.74);
+  border-radius: 16px;
+}
+
+.financial-source {
+  min-width: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.financial-source span,
+.financial-metric span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.financial-source strong {
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.financial-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.financial-metric {
+  min-width: 0;
+  min-height: 126px;
+  padding: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.financial-metric strong {
+  color: var(--ink);
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.financial-metric p {
+  margin: 0;
+  color: #343038;
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 700;
+}
+
+.financial-metric em {
+  margin-top: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.financial-metric.positive {
+  background: rgba(143, 254, 1, 0.16);
+}
+
+.financial-metric.negative {
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.decision-card {
+  padding: 18px;
+}
+
+.decision-grid {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.decision-status,
+.decision-check,
+.decision-note {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.74);
+  border-radius: 16px;
+}
+
+.decision-status {
+  min-width: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.decision-status span,
+.decision-check span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.decision-status strong {
+  color: var(--ink);
+  font-size: clamp(28px, 3vw, 42px);
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+.decision-status p,
+.decision-check p {
+  margin: 0;
+  color: #343038;
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 750;
+}
+
+.decision-status em {
+  margin-top: auto;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.decision-status.positive {
+  background: linear-gradient(180deg, rgba(143, 254, 1, 0.32), rgba(255, 255, 255, 0.76));
+}
+
+.decision-status.cautious {
+  background: linear-gradient(180deg, rgba(114, 1, 255, 0.12), rgba(255, 255, 255, 0.76));
+}
+
+.decision-checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.decision-check {
+  min-width: 0;
+  min-height: 118px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.decision-check strong {
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1;
+  text-transform: capitalize;
+  overflow-wrap: anywhere;
+}
+
+.decision-check.pass {
+  background: rgba(143, 254, 1, 0.14);
+}
+
+.decision-check.watch,
+.decision-check.wait {
+  background: rgba(114, 1, 255, 0.08);
+}
+
+.decision-check.pressure {
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.decision-note {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .alignment-panel {
@@ -642,6 +844,49 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.92),
     inset 0 1px 10px rgba(42, 35, 55, 0.06);
   color: var(--ink);
+}
+
+.alert-card {
+  padding: 16px;
+}
+
+.alert-form {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.alert-form button {
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid rgba(5, 5, 5, 0.08);
+  border-radius: 16px;
+  background: var(--lime);
+  color: #101010;
+  font: inherit;
+  font-weight: 950;
+  cursor: pointer;
+}
+
+.alert-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.alert-status,
+.alert-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.alert-status {
+  color: #245c00;
+}
+
+.alert-error {
+  color: #9b1c16;
 }
 
 label {
@@ -1031,6 +1276,10 @@ label {
   gap: 10px;
 }
 
+.event-reaction-grid {
+  margin-bottom: 12px;
+}
+
 .reaction-metric {
   min-height: 92px;
   padding: 12px;
@@ -1411,6 +1660,8 @@ label {
   .charts,
   .info,
   .readout-grid,
+  .financial-grid,
+  .decision-grid,
   .kpi-grid,
   .ai-summary-grid,
   .filing-section-grid,
@@ -1422,10 +1673,30 @@ label {
     min-width: 0;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .financial-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .decision-checks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {
   .hero-highlight {
+    grid-template-columns: 1fr;
+  }
+
+  .financial-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .decision-checks {
+    grid-template-columns: 1fr;
+  }
+
+  .alert-form {
     grid-template-columns: 1fr;
   }
 

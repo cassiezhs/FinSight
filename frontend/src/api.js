@@ -31,9 +31,26 @@ async function getJson(path, signal) {
   return payload;
 }
 
+async function postJson(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    throw new Error(payload.detail || `Request failed (${response.status})`);
+  }
+  return payload;
+}
+
 export const fetchBootstrap = (signal) => getJson("/api/bootstrap", signal);
 
-export const fetchDashboard = ({ ticker, start, end }, signal) => {
+export const fetchDashboard = ({ ticker, start, end, threshold }, signal) => {
   const params = new URLSearchParams({ ticker, start, end });
+  if (threshold) params.set("threshold", threshold);
   return getJson(`/api/dashboard?${params}`, signal);
 };
+
+export const subscribeFilingAlert = ({ email, ticker }) => postJson("/api/alerts/subscribe", { email, ticker });

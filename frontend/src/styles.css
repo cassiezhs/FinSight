@@ -39,6 +39,8 @@ select {
 
 select,
 .ticker-search input,
+.threshold-field input,
+.alert-form input,
 .native-range input {
   min-height: 48px;
   width: 100%;
