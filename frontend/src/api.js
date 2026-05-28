@@ -47,9 +47,8 @@ async function postJson(path, body) {
 
 export const fetchBootstrap = (signal) => getJson("/api/bootstrap", signal);
 
-export const fetchDashboard = ({ ticker, start, end, threshold }, signal) => {
+export const fetchDashboard = ({ ticker, start, end }, signal) => {
   const params = new URLSearchParams({ ticker, start, end });
-  if (threshold) params.set("threshold", threshold);
   return getJson(`/api/dashboard?${params}`, signal);
 };
 
