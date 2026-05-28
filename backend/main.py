@@ -49,14 +49,13 @@ def dashboard(
     ticker: str = Query(min_length=1, max_length=16),
     start: date = Query(),
     end: date = Query(),
-    threshold: float | None = Query(default=None, gt=0),
 ):
     if start > end:
         raise HTTPException(status_code=422, detail="start must be on or before end")
     try:
         from backend.dashboard_service import build_dashboard
 
-        return build_dashboard(ticker.upper(), start.isoformat(), end.isoformat(), threshold)
+        return build_dashboard(ticker.upper(), start.isoformat(), end.isoformat())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Dashboard query failed: {exc}") from exc
 

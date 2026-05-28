@@ -26,7 +26,7 @@ function formatPct(value) {
   return value == null ? "N/A" : `${value >= 0 ? "+" : ""}${(value * 100).toFixed(2)}%`;
 }
 
-function CardHead({ eyebrow, title, note }) {
+function CardHead({ eyebrow, title, note, action }) {
   return (
     <div className="card-head">
       <div>
@@ -34,7 +34,31 @@ function CardHead({ eyebrow, title, note }) {
         <h3>{title}</h3>
         {note && <p className="card-note">{note}</p>}
       </div>
+      {action}
     </div>
+  );
+}
+
+function CollapsibleSection({ id, className = "", eyebrow, title, note, collapsed, onToggle, children }) {
+  return (
+    <section className={`card ${className} ${collapsed ? "is-collapsed" : ""}`}>
+      <CardHead
+        eyebrow={eyebrow}
+        title={title}
+        note={note}
+        action={(
+          <button
+            aria-expanded={!collapsed}
+            className="collapse-toggle"
+            onClick={() => onToggle(id)}
+            type="button"
+          >
+            {collapsed ? "Show" : "Hide"}
+          </button>
+        )}
+      />
+      {!collapsed && children}
+    </section>
   );
 }
 
@@ -191,26 +215,34 @@ function FinancialStatements({ financials }) {
   );
 }
 
-function DecisionReadiness({ decision }) {
-  if (!decision) return <Empty>No decision readiness available.</Empty>;
+function ValuationAnchor({ anchor }) {
+  if (!anchor) return <Empty>No valuation anchor available.</Empty>;
   return (
-    <div className="decision-grid">
-      <div className={`decision-status ${decision.tone}`}>
-        <span>Readiness</span>
-        <strong>{decision.status}</strong>
-        <p>{decision.summary}</p>
-        <em>{decision.threshold ? `${formatPct(decision.gap_pct)} vs threshold` : "No threshold set"}</em>
+    <div className="anchor-grid">
+      <div className={`anchor-status ${anchor.tone}`}>
+        <span>{anchor.status}</span>
+        <strong>{anchor.fair_value ? `$${anchor.fair_value.toFixed(2)}` : "N/A"}</strong>
+        <p>{anchor.summary}</p>
+        <em>{anchor.latest_price ? `Latest close $${anchor.latest_price.toFixed(2)}` : "No price anchor"}</em>
       </div>
-      <div className="decision-checks">
-        {decision.checks.map((check) => (
-          <div className={`decision-check ${check.status}`} key={check.label}>
-            <span>{check.label}</span>
-            <strong>{check.status}</strong>
-            <p>{check.detail}</p>
+      <div className="anchor-tiers">
+        {(anchor.tiers || []).map((tier) => (
+          <div className="anchor-tier" key={tier.label}>
+            <span>{tier.label}</span>
+            <strong>{tier.price != null ? `$${tier.price.toFixed(2)}` : `$${tier.price_low.toFixed(2)} - $${tier.price_high.toFixed(2)}`}</strong>
+            <p>{tier.detail}</p>
+            <em>{tier.discount != null ? `${formatPct(tier.discount)} vs latest` : "N/A"}</em>
           </div>
         ))}
       </div>
-      <div className="decision-note">{decision.disclaimer}</div>
+      <div className="anchor-facts">
+        <div><span>Safety Discount</span><strong>{anchor.margin_of_safety != null ? formatPct(anchor.margin_of_safety) : "N/A"}</strong></div>
+        <div><span>Range low/high</span><strong>{anchor.range_low ? `$${anchor.range_low.toFixed(2)} / $${anchor.range_high.toFixed(2)}` : "N/A"}</strong></div>
+      </div>
+      <div className="anchor-rationale">
+        {anchor.rationale.map((item) => <p key={item}>{item}</p>)}
+        <em>{anchor.disclaimer}</em>
+      </div>
     </div>
   );
 }
@@ -251,7 +283,7 @@ function EChart({ option }) {
   return <div className="react-echart" ref={host} />;
 }
 
-function Charts({ charts }) {
+function Charts({ charts, collapsed, onToggle }) {
   const prices = charts?.prices || [];
   const events = charts?.events || [];
   const eventSeries = (type) => events
@@ -310,8 +342,12 @@ function Charts({ charts }) {
   };
   return (
     <div className="grid charts">
-      <section className="card chart-card"><CardHead eyebrow="Trend" title="Open vs Close Prices" note="Use wheel or trackpad to zoom. Drag inside the plot to move the time window." />{prices.length ? <EChart option={priceOption} /> : <Empty>No price data in range.</Empty>}</section>
-      <section className="card chart-card"><CardHead eyebrow="Liquidity" title="Trading Volume" />{prices.length ? <EChart option={volumeOption} /> : <Empty>No volume data in range.</Empty>}</section>
+      <CollapsibleSection id="price-chart" className="chart-card" eyebrow="Trend" title="Open vs Close Prices" note="Use wheel or trackpad to zoom. Drag inside the plot to move the time window." collapsed={collapsed["price-chart"]} onToggle={onToggle}>
+        {prices.length ? <EChart option={priceOption} /> : <Empty>No price data in range.</Empty>}
+      </CollapsibleSection>
+      <CollapsibleSection id="volume-chart" className="chart-card" eyebrow="Liquidity" title="Trading Volume" collapsed={collapsed["volume-chart"]} onToggle={onToggle}>
+        {prices.length ? <EChart option={volumeOption} /> : <Empty>No volume data in range.</Empty>}
+      </CollapsibleSection>
     </div>
   );
 }
@@ -421,7 +457,7 @@ function kpiValue(kpis, label, fallback) {
   return kpis.find((item) => item.label === label)?.value || fallback;
 }
 
-function FilingSections({ sections, kpis }) {
+function FilingSections({ sections, kpis, collapsed, onToggle }) {
   const mdnaSentiment = kpiValue(kpis, "MD&A Tone", sections.mdna.sentiment);
   const riskSentiment = kpiValue(kpis, "Risk Disclosure", sections.risk.sentiment);
 
@@ -429,38 +465,36 @@ function FilingSections({ sections, kpis }) {
     <>
       <div className="sentiment-tag">Sentiment - MD&amp;A: {mdnaSentiment} | Risk: {riskSentiment}</div>
       <div className="grid ai-summary-grid">
-        <SummaryPanel title="MD&A Summary" summary={sections.mdna.summary} />
-        <SummaryPanel title="Risk Summary" summary={sections.risk.summary} />
+        <SummaryPanel id="mdna-summary" title="MD&A Summary" summary={sections.mdna.summary} collapsed={collapsed["mdna-summary"]} onToggle={onToggle} />
+        <SummaryPanel id="risk-summary" title="Risk Summary" summary={sections.risk.summary} collapsed={collapsed["risk-summary"]} onToggle={onToggle} />
       </div>
       <div className="grid info filing-section-grid">
-        <TextPanel eyebrow="Filing stream" title="MD&A - Management Discussion" section={sections.mdna} />
-        <TextPanel eyebrow="Risk factors" title="Risk Sections" section={sections.risk} />
+        <TextPanel id="mdna-text" eyebrow="Filing stream" title="MD&A - Management Discussion" section={sections.mdna} collapsed={collapsed["mdna-text"]} onToggle={onToggle} />
+        <TextPanel id="risk-text" eyebrow="Risk factors" title="Risk Sections" section={sections.risk} collapsed={collapsed["risk-text"]} onToggle={onToggle} />
       </div>
     </>
   );
 }
 
-function TextPanel({ eyebrow, title, section }) {
+function TextPanel({ id, eyebrow, title, section, collapsed, onToggle }) {
   return (
-    <section className="card info-card">
-      <CardHead eyebrow={eyebrow} title={title} />
+    <CollapsibleSection id={id} className="info-card" eyebrow={eyebrow} title={title} collapsed={collapsed} onToggle={onToggle}>
       <div className="filing-actions">
         {section.date && <p className="filing-date">Filing date: {section.date}</p>}
         {section.url && <a className="event-link" href={section.url} rel="noreferrer" target="_blank">SEC filing</a>}
       </div>
       <div className="filing-text">{section.text}</div>
-    </section>
+    </CollapsibleSection>
   );
 }
 
-function SummaryPanel({ title, summary }) {
+function SummaryPanel({ id, title, summary, collapsed, onToggle }) {
   return (
-    <section className="card summary-card">
+    <CollapsibleSection id={id} className="summary-card" eyebrow="AI summary" title={title} collapsed={collapsed} onToggle={onToggle}>
       <div className="ai-change-summary">
-        <div className="ai-change-head"><span>AI summary</span><strong>{title}</strong></div>
         <div className="ai-change-body">{summary || "No summary available."}</div>
       </div>
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -469,6 +503,40 @@ function AlertSignup({ ticker }) {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const railRef = useRef(null);
+  const storageKey = ticker ? `finsight-alert-hidden:${ticker}` : "finsight-alert-hidden";
+
+  useEffect(() => {
+    setStatus("");
+    setError("");
+    setHidden(window.localStorage.getItem(storageKey) === "1");
+  }, [storageKey]);
+
+  useEffect(() => {
+    let frame = 0;
+    const followScroll = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        if (!railRef.current) return;
+        const y = window.scrollY + window.innerHeight * 0.52;
+        railRef.current.style.setProperty("--alert-y", `${y}px`);
+      });
+    };
+    followScroll();
+    window.addEventListener("scroll", followScroll, { passive: true });
+    window.addEventListener("resize", followScroll);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", followScroll);
+      window.removeEventListener("resize", followScroll);
+    };
+  }, []);
+
+  const hideAlert = () => {
+    window.localStorage.setItem(storageKey, "1");
+    setHidden(true);
+  };
 
   const submit = (event) => {
     event.preventDefault();
@@ -478,37 +546,45 @@ function AlertSignup({ ticker }) {
     subscribeFilingAlert({ email, ticker }).then(() => {
       setStatus(`Subscribed ${email} to ${ticker} filing alerts.`);
       setEmail("");
+      hideAlert();
     }).catch((err) => {
       setError(err.message);
     }).finally(() => setSaving(false));
   };
 
+  if (hidden) return null;
+
   return (
-    <section className="card alert-card">
-      <CardHead eyebrow="Email alerts" title="Filing Alerts" note="Get an email when a new 8-K, 10-Q, or 10-K is detected for the selected ticker." />
-      <form className="alert-form" onSubmit={submit}>
-        <label className="field">Email<input autoComplete="email" placeholder="you@example.com" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
-        <button disabled={saving || !ticker} type="submit">{saving ? "Saving..." : `Alert me for ${ticker || "ticker"}`}</button>
-      </form>
-      {status && <p className="alert-status">{status}</p>}
-      {error && <p className="alert-error">{error}</p>}
-    </section>
+    <div className="alert-float" ref={railRef}>
+      <button className="alert-orb" type="button" aria-label="Filing alert signup">!</button>
+      <section className="alert-popover">
+        <button className="alert-close" type="button" aria-label="Hide filing alert signup" onClick={hideAlert}>x</button>
+        <CardHead eyebrow="Email alerts" title="Filing Alerts" note="Get an email when a new 8-K, 10-Q, or 10-K is detected for the selected ticker." />
+        <form className="alert-form" onSubmit={submit}>
+          <label className="field">Email<input autoComplete="email" placeholder="you@example.com" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+          <button disabled={saving || !ticker} type="submit">{saving ? "Saving..." : `Alert me for ${ticker || "ticker"}`}</button>
+        </form>
+        {status && <p className="alert-status">{status}</p>}
+        {error && <p className="alert-error">{error}</p>}
+      </section>
+    </div>
   );
 }
 
 export default function App() {
   const [bootstrap, setBootstrap] = useState(null);
-  const [selection, setSelection] = useState({ ticker: "", start: "", end: "", threshold: "" });
+  const [selection, setSelection] = useState({ ticker: "", start: "", end: "" });
   const [dashboard, setDashboard] = useState(null);
   const [bootError, setBootError] = useState("");
   const [dashboardError, setDashboardError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [collapsedSections, setCollapsedSections] = useState({});
 
   useEffect(() => {
     const controller = new AbortController();
     fetchBootstrap(controller.signal).then((data) => {
       setBootstrap(data);
-      setSelection({ ticker: data.default_ticker || "", start: data.default_start_date || data.start_date || "", end: data.end_date || "", threshold: "" });
+      setSelection({ ticker: data.default_ticker || "", start: data.default_start_date || data.start_date || "", end: data.end_date || "" });
     }).catch((error) => {
       if (error.name !== "AbortError") setBootError(error.message);
     });
@@ -529,6 +605,9 @@ export default function App() {
 
   const invalidRange = selection.start && selection.end && selection.start > selection.end;
   const applyPreset = (preset) => setSelection((value) => ({ ...value, ...presetRange(preset, bootstrap) }));
+  const toggleSection = (id) => {
+    setCollapsedSections((value) => ({ ...value, [id]: !value[id] }));
+  };
 
   if (bootError) return <main className="page-shell"><Empty>{bootError}</Empty></main>;
   return (
@@ -543,24 +622,35 @@ export default function App() {
       <section className="controls-card card">
         <label className="field">Select Ticker<TickerSearch tickers={bootstrap?.tickers || []} value={selection.ticker} onChange={(ticker) => setSelection((value) => ({ ...value, ticker }))} /></label>
         <div className="field date-field"><label>Select Date Range</label><div className="native-range"><input type="date" min={bootstrap?.start_date} max={bootstrap?.end_date} value={selection.start} onChange={(event) => setSelection((value) => ({ ...value, start: event.target.value }))} /><input type="date" min={bootstrap?.start_date} max={bootstrap?.end_date} value={selection.end} onChange={(event) => setSelection((value) => ({ ...value, end: event.target.value }))} /></div></div>
-        <label className="field threshold-field">Personal Threshold<input min="0" placeholder="Optional price" step="0.01" type="number" value={selection.threshold} onChange={(event) => setSelection((value) => ({ ...value, threshold: event.target.value }))} /></label>
         <div className="field range-preset-field"><label>Quick Ranges</label><div className="range-presets">{presets.map(([label, value]) => <button key={value} onClick={() => applyPreset(value)} type="button">{label}</button>)}</div></div>
       </section>
-      <AlertSignup ticker={selection.ticker} />
       {invalidRange && <Empty>Start date must be on or before end date.</Empty>}
       {dashboardError && <Empty>{dashboardError}</Empty>}
       {loading && !dashboard && <section className="card loading-card"><Loading /></section>}
       {dashboard && <>
-        <section className="card readout-card"><CardHead eyebrow="Evidence-weighted" title="Market Readout" note="Price action, latest disclosure freshness, short-window reaction, and 8-K event impact in one view." /><MarketReadout readout={dashboard.market_readout} /></section>
-        <section className="card decision-card"><CardHead eyebrow="Decision aid" title="Decision Readiness" note="Compares your personal threshold with market, filing, and financial statement checks." /><DecisionReadiness decision={dashboard.decision_readiness} /></section>
-        <section className="card financial-card"><CardHead eyebrow="Statement pulse" title="Financial Statements" note="Revenue, margin, cash flow, and debt/liquidity signals extracted from the latest periodic filing." /><FinancialStatements financials={dashboard.financials} /></section>
+        <CollapsibleSection id="market-readout" className="readout-card" eyebrow="Evidence-weighted" title="Market Readout" note="Price action, latest disclosure freshness, short-window reaction, and 8-K event impact in one view." collapsed={collapsedSections["market-readout"]} onToggle={toggleSection}>
+          <MarketReadout readout={dashboard.market_readout} />
+        </CollapsibleSection>
+        <CollapsibleSection id="valuation-anchor" className="anchor-card" eyebrow="Research anchor" title="Valuation Anchor" note="Fair value, watch price, and buy zone derived from price range, market readout, filing risk, and financial statement signals." collapsed={collapsedSections["valuation-anchor"]} onToggle={toggleSection}>
+          <ValuationAnchor anchor={dashboard.valuation_anchor} />
+        </CollapsibleSection>
+        <CollapsibleSection id="financial-statements" className="financial-card" eyebrow="Statement pulse" title="Financial Statements" note="Revenue, margin, cash flow, and debt/liquidity signals extracted from the latest periodic filing." collapsed={collapsedSections["financial-statements"]} onToggle={toggleSection}>
+          <FinancialStatements financials={dashboard.financials} />
+        </CollapsibleSection>
         {dashboard.price_coverage?.warning && <Empty>{dashboard.price_coverage.warning}</Empty>}
-        <Charts charts={dashboard.charts} />
-        <section className="card comparison-card"><CardHead eyebrow="Filing history" title="Filing Comparison" note="Selected periodic filing versus the previous available filing language." /><Comparison sections={dashboard.comparison} /></section>
-        <section className="card events-card"><CardHead eyebrow="Event detail" title="8-K Events" /><EightKEvents events={dashboard.eight_k_events} /></section>
-        <section className="card reaction-card"><CardHead eyebrow="Market reaction" title="Price Reaction After Disclosure" note="Returns anchor on the next trading day after 10-Q or 10-K filings and compare with the S&P 500." /><Reactions reactions={dashboard.reactions} /></section>
-        <FilingSections sections={dashboard.sections} kpis={dashboard.kpis || []} />
+        <Charts charts={dashboard.charts} collapsed={collapsedSections} onToggle={toggleSection} />
+        <CollapsibleSection id="filing-comparison" className="comparison-card" eyebrow="Filing history" title="Filing Comparison" note="Selected periodic filing versus the previous available filing language." collapsed={collapsedSections["filing-comparison"]} onToggle={toggleSection}>
+          <Comparison sections={dashboard.comparison} />
+        </CollapsibleSection>
+        <CollapsibleSection id="eight-k-events" className="events-card" eyebrow="Event detail" title="8-K Events" collapsed={collapsedSections["eight-k-events"]} onToggle={toggleSection}>
+          <EightKEvents events={dashboard.eight_k_events} />
+        </CollapsibleSection>
+        <CollapsibleSection id="price-reaction" className="reaction-card" eyebrow="Market reaction" title="Price Reaction After Disclosure" note="Returns anchor on the next trading day after 10-Q or 10-K filings and compare with the S&P 500." collapsed={collapsedSections["price-reaction"]} onToggle={toggleSection}>
+          <Reactions reactions={dashboard.reactions} />
+        </CollapsibleSection>
+        <FilingSections sections={dashboard.sections} kpis={dashboard.kpis || []} collapsed={collapsedSections} onToggle={toggleSection} />
       </>}
+      <AlertSignup ticker={selection.ticker} />
     </main>
   );
 }

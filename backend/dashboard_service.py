@@ -92,9 +92,10 @@ def get_bootstrap() -> dict[str, Any]:
 
 def stock_data(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     query = """
-        SELECT "Date", "Open", "Close", "Volume"
+        SELECT "Date", AVG("Open") AS "Open", AVG("Close") AS "Close", SUM("Volume") AS "Volume"
         FROM stock_prices
         WHERE ticker = %s AND "Date" >= %s::date AND "Date" <= %s::date
+        GROUP BY "Date"
         ORDER BY "Date";
     """
     df = pd.read_sql(query, engine(), params=(ticker, start_date, end_date))
@@ -574,9 +575,10 @@ def load_periodic_filings(ticker: str, start_date: str, end_date: str) -> pd.Dat
 @lru_cache(maxsize=512)
 def price_window(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
     query = """
-        SELECT "Date", "Close"
+        SELECT "Date", AVG("Close") AS "Close"
         FROM stock_prices
         WHERE ticker = %s AND "Date" >= %s::date AND "Date" <= (%s::date + INTERVAL '90 days')
+        GROUP BY "Date"
         ORDER BY "Date";
     """
     df = pd.read_sql(query, engine(), params=(ticker, start_date, end_date))
@@ -588,9 +590,10 @@ def price_window(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
 @lru_cache(maxsize=512)
 def sp500_window(start_date: str, end_date: str) -> pd.DataFrame:
     query = """
-        SELECT "Date", close
+        SELECT "Date", AVG(close) AS close
         FROM sp500_index
         WHERE "Date" >= %s::date AND "Date" <= (%s::date + INTERVAL '90 days')
+        GROUP BY "Date"
         ORDER BY "Date";
     """
     df = pd.read_sql(query, engine(), params=(start_date, end_date))
@@ -785,16 +788,14 @@ def build_kpis(ticker: str, start_date: str, end_date: str, prices: pd.DataFrame
         latest_form = str(latest_periodic["event_type"]) if latest_periodic is not None else None
         latest_date = date_text(latest_periodic["filing_date"]) if latest_periodic is not None else None
         if section is None:
-            return "No 10-Q", f"Latest 10-Q {latest_date} has no extracted {section_name}" if latest_form == "10-Q" else "No extracted 10-Q section", "neutral"
+            return "No Filing", f"Latest {latest_form or '10-Q/10-K'} {latest_date or ''} has no extracted {section_name}".strip(), "neutral"
         form_type = str(section.get("form_type", "10-K") or "10-K")
         filing_date = date_text(section["filing_date"])
-        if latest_form == "10-Q" and (form_type != "10-Q" or filing_date != latest_date):
-            return "No 10-Q", f"Latest 10-Q {latest_date} has no extracted {section_name}", "neutral"
-        if form_type != "10-Q":
-            return "No 10-Q", f"Latest available: {form_type} {filing_date}", "neutral"
+        if latest_periodic is not None and (form_type != latest_form or filing_date != latest_date):
+            return "No Filing", f"Latest {latest_form} {latest_date} has no extracted {section_name}", "neutral"
         label = narrative_label(section["content"] if section is not None else "")
         score = local_sentiment_score(section["content"] if section is not None else "")
-        detail = f"10-Q {filing_date} · local score {score:+.3f}" if score is not None else f"10-Q {filing_date} · no local score"
+        detail = f"{form_type} {filing_date} · local score {score:+.3f}" if score is not None else f"{form_type} {filing_date} · no local score"
         return label, detail, tone(label)
     mdna_badge, risk_badge = badge(mdna, "MD&A"), badge(risk, "Risk")
     return [
@@ -894,7 +895,7 @@ def price_coverage(prices: pd.DataFrame, start_date: str, end_date: str) -> dict
     expected_days = None
     if inspect(engine()).has_table("sp500_index", schema=settings.db_schema):
         expected = pd.read_sql(
-            'SELECT COUNT(*) AS trading_days FROM sp500_index WHERE "Date" >= %s::date AND "Date" <= %s::date',
+            'SELECT COUNT(DISTINCT "Date") AS trading_days FROM sp500_index WHERE "Date" >= %s::date AND "Date" <= %s::date',
             engine(),
             params=(start_date, end_date),
         )
@@ -903,7 +904,7 @@ def price_coverage(prices: pd.DataFrame, start_date: str, end_date: str) -> dict
     if not expected_days:
         expected_days = len(pd.bdate_range(start=start_date, end=end_date))
 
-    available_days = len(prices)
+    available_days = int(prices["Date"].dt.normalize().nunique()) if not prices.empty else 0
     ratio = available_days / expected_days if expected_days else 1
     max_gap_days = None
     if len(prices) > 1:
@@ -1041,73 +1042,124 @@ def market_readout(prices: pd.DataFrame, mdna: pd.Series | None, risk: pd.Series
     }
 
 
-def decision_readiness(prices: pd.DataFrame, threshold: float | None, readout: dict[str, Any], risk: pd.Series | None, financials: dict[str, Any], disclosure: dict[str, Any]) -> dict[str, Any]:
-    latest_close = number(prices.iloc[-1]["Close"]) if not prices.empty else None
+def valuation_anchor(prices: pd.DataFrame, readout: dict[str, Any], risk: pd.Series | None, financials: dict[str, Any], disclosure: dict[str, Any]) -> dict[str, Any]:
+    if prices.empty:
+        return {
+            "status": "Unavailable",
+            "tone": "neutral",
+            "fair_value": None,
+            "watch_price": None,
+            "buy_zone_low": None,
+            "buy_zone_high": None,
+            "latest_price": None,
+            "margin_of_safety": None,
+            "summary": "No recent price data is available to build a valuation anchor.",
+            "tiers": [],
+            "rationale": [],
+            "disclaimer": "Research anchor only, not a buy recommendation.",
+        }
+
+    latest_price = float(prices.iloc[-1]["Close"])
+    range_low = float(prices["Close"].min())
+    range_high = float(prices["Close"].max())
+    range_mid = float(prices["Close"].median())
+    volatility = float(prices["Close"].pct_change().dropna().std() * (252**0.5)) if len(prices) > 1 else None
     risk_tone = narrative_label(risk["content"] if risk is not None else "")
     financial_signal = financial_readout_signal(financials)
-    checks: list[dict[str, str]] = []
 
-    def add_check(label: str, status: str, detail: str) -> None:
-        checks.append({"label": label, "status": status, "detail": detail})
+    fair_discount = 0.03
+    watch_discount = 0.08
+    buy_discount = 0.18
+    rationale = ["Fair value starts near the latest price and one-year median, then adjusts for market, filing, and financial signals."]
 
-    if latest_close is None:
-        return {
-            "status": "Watch",
-            "tone": "neutral",
-            "summary": "No current price is available for decision readiness.",
-            "latest_price": None,
-            "threshold": threshold,
-            "gap_pct": None,
-            "checks": checks,
-            "disclaimer": "Research aid only, not investment advice.",
-        }
+    if readout["stance"] in {"Cautious", "Risk-Off"}:
+        fair_discount += 0.04
+        watch_discount += 0.04
+        buy_discount += 0.06
+        rationale.append(f"Market Readout is {readout['stance']}, so each entry layer is more conservative.")
+    elif readout["stance"] == "Constructive":
+        fair_discount -= 0.03
+        watch_discount -= 0.02
+        buy_discount -= 0.03
+        rationale.append("Constructive Market Readout reduces the required discount.")
 
-    if threshold is None:
-        add_check("Price threshold", "missing", "Add a personal threshold price to evaluate readiness.")
-        add_check("Market readout", readout["stance"], readout["why"])
-        add_check("Financial statements", "available" if financials.get("status") == "ready" else "missing", financial_signal["summary"])
-        return {
-            "status": "Watch",
-            "tone": "neutral",
-            "summary": "Set a personal threshold to evaluate whether this belongs in Watch, Research Further, or Threshold Ready.",
-            "latest_price": latest_close,
-            "threshold": None,
-            "gap_pct": None,
-            "checks": checks,
-            "disclaimer": "Research aid only, not investment advice.",
-        }
+    if risk_tone == "Risk-Elevated":
+        fair_discount += 0.03
+        watch_discount += 0.04
+        buy_discount += 0.06
+        rationale.append("Risk language is elevated in the latest filing.")
+    if financial_signal["score"] >= 1.0:
+        fair_discount -= 0.03
+        watch_discount -= 0.03
+        buy_discount -= 0.04
+        rationale.append("Financial statement signals are supportive.")
+    elif financial_signal["score"] < -0.3:
+        fair_discount += 0.03
+        watch_discount += 0.04
+        buy_discount += 0.05
+        rationale.append("Financial statement signals show pressure.")
+    if disclosure["freshness"] != "recent":
+        fair_discount += 0.02
+        watch_discount += 0.03
+        buy_discount += 0.04
+        rationale.append("Latest disclosure is not recent, so the anchor is more conservative.")
+    if volatility is not None and volatility >= 0.35:
+        fair_discount += 0.02
+        watch_discount += 0.03
+        buy_discount += 0.05
+        rationale.append("Recent volatility is elevated.")
 
-    gap_pct = (latest_close / threshold) - 1
-    below_threshold = latest_close <= threshold
-    add_check("Price threshold", "pass" if below_threshold else "wait", f"Latest close {format_price(latest_close)} vs threshold {format_price(threshold)}.")
-    add_check("Market readout", readout["stance"], f"{readout['stance']} score {readout['score']}: {readout['driver']}")
-    add_check("Risk language", "watch" if risk_tone == "Risk-Elevated" else "pass", risk_tone)
-    add_check("Financial statements", "pass" if financial_signal["score"] >= 0.5 else "watch" if financial_signal["score"] > -0.3 else "pressure", financial_signal["summary"])
-    add_check("Disclosure freshness", "pass" if disclosure["freshness"] == "recent" else "watch", disclosure["label"])
-
-    if not below_threshold:
-        status, tone = "Watch", "neutral"
-        summary = "Price is still above your threshold; keep it on watch unless your threshold changes."
-    elif readout["stance"] == "Constructive" and risk_tone != "Risk-Elevated" and financial_signal["score"] >= 0.5 and disclosure["freshness"] == "recent":
-        status, tone = "Threshold Ready", "positive"
-        summary = "Price is below your threshold and core market, filing, and financial checks are supportive."
-    else:
-        status, tone = "Research Further", "cautious"
-        summary = "Price is at or below your threshold, but at least one risk, narrative, or financial check still needs review."
+    fair_discount = max(-0.02, min(fair_discount, 0.18))
+    watch_discount = max(0.04, min(watch_discount, 0.22))
+    buy_discount = max(0.12, min(buy_discount, 0.36))
+    market_reference = (latest_price * 0.65) + (range_mid * 0.35)
+    fair_value = market_reference * (1 - fair_discount)
+    fair_value = min(max(fair_value, range_low), range_high)
+    watch_price = fair_value * (1 - watch_discount)
+    buy_zone_high = fair_value * (1 - buy_discount)
+    buy_zone_low = buy_zone_high * 0.92
+    discount_to_latest = (watch_price / latest_price) - 1
 
     return {
-        "status": status,
-        "tone": tone,
-        "summary": summary,
-        "latest_price": latest_close,
-        "threshold": threshold,
-        "gap_pct": gap_pct,
-        "checks": checks,
-        "disclaimer": "Research aid only, not investment advice.",
+        "status": "Three-Layer Anchor",
+        "tone": "cautious" if buy_discount >= 0.26 else "neutral",
+        "fair_value": fair_value,
+        "watch_price": watch_price,
+        "buy_zone_low": buy_zone_low,
+        "buy_zone_high": buy_zone_high,
+        "latest_price": latest_price,
+        "range_low": range_low,
+        "range_high": range_high,
+        "margin_of_safety": buy_discount,
+        "discount_to_latest": discount_to_latest,
+        "summary": f"Fair value is around {format_price(fair_value)}; watch near {format_price(watch_price)}; deeper research buy zone starts around {format_price(buy_zone_high)}.",
+        "tiers": [
+            {
+                "label": "Fair Value Anchor",
+                "price": fair_value,
+                "detail": "Neutral reference from latest price, one-year median, filings, and financial signals.",
+                "discount": (fair_value / latest_price) - 1,
+            },
+            {
+                "label": "Watch Price",
+                "price": watch_price,
+                "detail": "Price where the ticker becomes worth closer review.",
+                "discount": discount_to_latest,
+            },
+            {
+                "label": "Buy Zone",
+                "price_low": buy_zone_low,
+                "price_high": buy_zone_high,
+                "detail": "Conservative research zone requiring the strongest margin of safety.",
+                "discount": (buy_zone_high / latest_price) - 1,
+            },
+        ],
+        "rationale": rationale,
+        "disclaimer": "Research anchor only, not a buy recommendation or investment advice.",
     }
 
 
-def build_dashboard(ticker: str, start_date: str, end_date: str, threshold: float | None = None) -> dict[str, Any]:
+def build_dashboard(ticker: str, start_date: str, end_date: str) -> dict[str, Any]:
     start_year, end_year = pd.to_datetime(start_date).year, pd.to_datetime(end_date).year
     year_label = str(start_year) if start_year == end_year else f"{start_year}-{end_year}"
     prices, events = stock_data(ticker, start_date, end_date), filing_events(ticker, start_date, end_date)
@@ -1126,7 +1178,7 @@ def build_dashboard(ticker: str, start_date: str, end_date: str, threshold: floa
         "charts": serialize_charts(prices, events),
         "market_readout": readout,
         "financials": financials,
-        "decision_readiness": decision_readiness(prices, threshold, readout, risk, financials, disclosure),
+        "valuation_anchor": valuation_anchor(prices, readout, risk, financials, disclosure),
         "comparison": [
             serialize_comparison("MD&A", "mdna_sections", ticker, mdna),
             serialize_comparison("Risk", "risk_sections", ticker, risk),
