@@ -2,7 +2,7 @@
 
 ## Narrative vs. Market
 
-![FinSight dashboard](title_img.png)
+![FinSight dashboard](logo.png)
 
 FinSight is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-Q/10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
 
