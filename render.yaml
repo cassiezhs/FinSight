@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: finsight-react-fastapi
+    runtime: python
+    buildCommand: pip install -r requirements.txt && npm install --prefix frontend && npm run build --prefix frontend
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: OPENAI_ENABLED
+        value: "0"

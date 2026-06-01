@@ -122,25 +122,27 @@ def _fallback_heading_grab(orig: str, lower: str, heading_words: list[str], end_
         prefer_after = m_pref.start()
 
     # Find candidate indices for heading terms
-    head_idxs = []
+    head_idxs = set()
     for w in heading_words:
         for m in re.finditer(rf"\b{re.escape(w)}\b", lower, re.IGNORECASE):
             if m.start() >= prefer_after:
-                head_idxs.append(m.start())
+                head_idxs.add(m.start())
     if not head_idxs:
         return ""
 
-    s0 = min(head_idxs)  # the earliest plausible heading after 'Part I'
-
     end_pats = [_compile_label_pattern(lab) for lab in end_labels]
-    e0 = len(lower)
-    for ep in end_pats:
-        em = ep.search(lower, s0)
-        if em:
-            e0 = min(e0, em.start())
+    candidates = []
+    for s0 in sorted(head_idxs):
+        e0 = len(lower)
+        for ep in end_pats:
+            em = ep.search(lower, s0)
+            if em:
+                e0 = min(e0, em.start())
+        if e0 <= s0:
+            e0 = min(s0 + 20000, len(orig))
+        candidates.append((e0 - s0, s0, e0))
 
-    if e0 <= s0:
-        e0 = min(s0 + 20000, len(orig))
+    _, s0, e0 = max(candidates)
 
     return orig[s0:e0].strip()
 
@@ -260,8 +262,8 @@ def get_cik(ticker: str) -> str | None:
             return str(item["cik_str"]).zfill(10)
     return None
 
-def get_10k_meta_for_year(cik: str, year: int) -> tuple[str | None, str | None]:
-    """Return (index.json URL, filingDate) for the company's 10-K filed in a given calendar year."""
+def get_filing_meta_for_year(cik: str, year: int, form_types: tuple[str, ...]) -> tuple[str | None, str | None, str | None]:
+    """Return (index.json URL, filingDate, formType) for the first matching form filed in a year."""
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     resp = requests.get(url, headers=UA, timeout=60)
     resp.raise_for_status()
@@ -271,12 +273,19 @@ def get_10k_meta_for_year(cik: str, year: int) -> tuple[str | None, str | None]:
     dates = data["filings"]["recent"]["filingDate"]
     accs = [a.replace("-", "") for a in data["filings"]["recent"]["accessionNumber"]]
 
+    wanted = set(form_types)
     for i, f in enumerate(forms):
-        if f == "10-K" and dates[i].startswith(str(year)):
+        if f in wanted and dates[i].startswith(str(year)):
             acc_no = accs[i]
             idx = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_no}/index.json"
-            return idx, dates[i]
-    return None, None
+            return idx, dates[i], f
+    return None, None, None
+
+
+def get_10k_meta_for_year(cik: str, year: int) -> tuple[str | None, str | None]:
+    """Return (index.json URL, filingDate) for the company's 10-K filed in a given calendar year."""
+    idx, filing_date, _ = get_filing_meta_for_year(cik, year, ("10-K",))
+    return idx, filing_date
 
 def get_10k_html_url(doc_index_url: str) -> str | None:
     resp = requests.get(doc_index_url, headers=UA, timeout=60)
@@ -414,21 +423,41 @@ def extract_risk_from_main_html(html_url: str) -> str:
 
     return section or "Risk Factors section not found"
 
-def extract_mdna_from_main_html(html_url: str) -> str:
+def extract_mdna_from_main_html(html_url: str, form_type: str = "10-K") -> str:
     """
-    Extract 'Item 7' (MD&A) generically (no Apple-specific anchors).
+    Extract MD&A generically (no Apple-specific anchors).
+    10-K MD&A is Item 7; 10-Q MD&A is Item 2.
     """
     r = requests.get(html_url, headers=UA, timeout=60)
     r.raise_for_status()
     orig, lower = _normalize_text(r.text)
 
-    section = _find_best_section(
-        orig, lower,
-        start_label="item 7",
-        end_labels=["item 7a", "item 8", "signatures", "part ii"],
-        prefer_after_label=None,
-        min_chars=1500,
-    )
+    if form_type == "10-Q":
+        section = _fallback_heading_grab(
+            orig, lower,
+            heading_words=[
+                "management’s discussion and analysis",
+                "management's discussion and analysis",
+                "management discussion and analysis",
+            ],
+            end_labels=["item 3", "item 4", "signatures"],
+        )
+        if not section or len(section) < 800:
+            section = _find_best_section(
+                orig, lower,
+                start_label="item 2",
+                end_labels=["item 3", "item 4", "signatures"],
+                prefer_after_label="part i",
+                min_chars=1500,
+            )
+    else:
+        section = _find_best_section(
+            orig, lower,
+            start_label="item 7",
+            end_labels=["item 7a", "item 8", "signatures", "part ii"],
+            prefer_after_label=None,
+            min_chars=1500,
+        )
     return section or "MD&A section not found"
 
 # ---------------- Demo/main ---------------- #

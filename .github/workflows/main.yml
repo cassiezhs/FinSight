@@ -5,9 +5,14 @@ on:
     - cron: "0 10 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: finsight-daily-refresh
+  cancel-in-progress: false
+
 jobs:
   refresh-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repo
@@ -29,17 +34,18 @@ jobs:
       - name: Run daily refresh
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-
-          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT || 'FinSight/0.1 contact@example.com' }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
-          FINSIGHT_START_DATE: ${{ vars.FINSIGHT_START_DATE || '2018-01-01' }}
-          FINSIGHT_END_DATE: ${{ vars.FINSIGHT_END_DATE || 'today' }}
-          FINSIGHT_DAILY_REFRESH_DAYS: ${{ vars.FINSIGHT_DAILY_REFRESH_DAYS || '10' }}
-          FINSIGHT_START_YEAR: ${{ vars.FINSIGHT_START_YEAR || '2018' }}
-          FINSIGHT_END_YEAR: ${{ vars.FINSIGHT_END_YEAR || '2026' }}
-          FINSIGHT_TICKERS: ${{ vars.FINSIGHT_TICKERS || 'AAPL,MSFT,NVDA' }}
-
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          FINSIGHT_END_DATE: today
+          FINSIGHT_DAILY_REFRESH_DAYS: 10
+          FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS || 'sp500' }}
           FINSIGHT_DAILY_LOAD_8K: "1"
-          FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
-        run: python data_ingestiion/daily_refresh.py
+          FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS: "1"
+          FINSIGHT_LOAD_8K_DETAILS: "0"
+          FINSIGHT_SEND_ALERTS: "1"
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_TLS: ${{ secrets.SMTP_TLS }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: python -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections --send-alerts

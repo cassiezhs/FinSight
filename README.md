@@ -1,10 +1,10 @@
 # FinSight
 
-## Financial Data Pipeline and Dash Insight Dashboard
+## Narrative vs. Market
 
-![FinSight dashboard](title_img.png)
+![FinSight dashboard](logo.png)
 
-FinSight combines stock market performance with company financial narrative extracted from SEC filings. The current `main` branch runs a Python Dash dashboard backed by PostgreSQL data ingestion jobs.
+FinSight is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-Q/10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
 
 The dashboard is centered on a practical question:
 
@@ -12,29 +12,35 @@ The dashboard is centered on a practical question:
 
 ## What The Dashboard Does
 
-- Visualizes historical stock prices and trading volume with Plotly charts.
-- Marks 10-K and 8-K filing events on the price timeline.
-- Compares selected 10-K MD&A and Risk Factors sections with prior filings.
-- Shows readability, word-count, sentiment, market reaction, and post-filing return signals.
-- Calculates 1-day, 5-day, and 30-day post-10-K returns and excess returns versus the S&P 500.
-- Supports optional OpenAI summaries for filing-language changes.
-- Stores stock prices, benchmark prices, and filing data in PostgreSQL.
+- Compares selected 10-Q/10-K MD&A and Risk sections with the previous available filing.
+- Surfaces new and removed filing language, readability shifts, word-count changes, and narrative tone changes.
+- Produces a `Market Readout` that combines filing tone, event activity, price behavior, and post-filing reaction.
+- Computes a `Narrative vs Market Alignment` signal from:
+  - filing tone change
+  - new risk language count
+  - post-disclosure excess return versus the S&P 500
+  - sentiment shift
+  - market reaction label
+- Labels alignment as `Aligned`, `Narrative ahead of market`, `Market skeptical`, or `Risk confirmed`.
+- Marks 10-Q, 10-K, and 8-K filing events on price charts.
+- Shows compact expandable 8-K cards with filing date, event type, impact label, short summary, and SEC filing details.
+- Calculates 1-day, 5-day, and 30-day post-disclosure returns and excess returns versus the S&P 500.
+- Supports optional OpenAI change summaries and filing narrative labels.
 
 ## Data Sources
 
 - Daily stock prices and S&P 500 benchmark data from Yahoo Finance through `yfinance`.
 - SEC EDGAR metadata and filing documents for:
-  - 10-K MD&A sections
-  - 10-K Risk Factors sections
+  - 10-Q/10-K MD&A sections
+  - 10-Q/10-K Risk Factors sections
   - 8-K filing events and detail previews
 
 ## Tech Stack
 
-- Python Dash and Dash Bootstrap Components
-- Plotly
+- React, Vite, and Plotly.js
+- FastAPI and Python
 - PostgreSQL or Neon Postgres
 - SQLAlchemy and `psycopg2`
-- Yahoo Finance via `yfinance`
 - SEC parsing with Requests and BeautifulSoup
 - Optional OpenAI API summaries
 - Optional FinBERT research pipeline for filing sentiment/modeling experiments
@@ -42,9 +48,14 @@ The dashboard is centered on a practical question:
 ## Project Layout
 
 ```text
-app/
-  dashoboard.py              # Dash application
-  assets/style.css           # Dashboard styling
+backend/
+  main.py                    # FastAPI routes and built-frontend serving
+  dashboard_service.py       # JSON dashboard service layer
+frontend/
+  src/App.jsx                # React dashboard surface
+  src/api.js                 # FastAPI client
+  src/dashboard.css          # Dashboard design system and visual assets
+  src/styles.css             # React-specific layout overrides
 data_ingestiion/
   config.py                  # Environment/config handling
   db.py                      # SQLAlchemy engine setup
@@ -57,20 +68,26 @@ data_ingestiion/
 tests/
   test_event_mapping.py
   test_fetch_sec.py
-wsgi.py                      # WSGI entrypoint for Dash deployment
+render.yaml                   # Staging React/FastAPI Render blueprint
 ```
 
-The source tree keeps the existing `data_ingestiion` and `dashoboard.py` spellings to avoid breaking imports and run commands.
+The data pipeline keeps the existing `data_ingestiion` spelling to avoid breaking imports.
 
 ## Setup
 
-Create a virtual environment and install dependencies:
+Create a virtual environment and install backend dependencies:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
+```
+
+Install the frontend dependencies:
+
+```bash
+npm install --prefix frontend
 ```
 
 Configure `.env`.
@@ -121,7 +138,15 @@ Ingestion jobs read `FINSIGHT_TICKERS`.
 FINSIGHT_TICKERS=AAPL,MSFT,NVDA
 ```
 
-If the variable is omitted, the repo falls back to the default ticker universe in `data_ingestiion/config.py`.
+To load the current S&P 500 universe, set:
+
+```env
+FINSIGHT_TICKERS=sp500
+```
+
+`sp500` is resolved at ingestion time from the current S&P 500 constituents table, and symbols such as `BRK.B` are normalized to Yahoo Finance's `BRK-B` format.
+
+If the variable is omitted, the repo falls back to the default 100-ticker universe in `data_ingestiion/config.py`.
 
 The dashboard dropdown is database-driven. It shows tickers already present in `stock_prices`, even if a scheduled refresh job only updates a smaller ticker list.
 
@@ -139,7 +164,7 @@ Use `today` as the configured end date when a historical backfill should run thr
 FINSIGHT_END_DATE=today python3 data_ingestiion/load_to_db.py
 ```
 
-Include 10-K MD&A and Risk Factors extraction:
+Include 10-Q/10-K MD&A and Risk section extraction:
 
 ```bash
 FINSIGHT_LOAD_SEC=1 python3 data_ingestiion/load_to_db.py
@@ -169,59 +194,132 @@ By default it:
 Refresh current-year SEC data explicitly when needed:
 
 ```bash
-python3 -m data_ingestiion.daily_refresh --with-8k --with-10k-sections
+python3 -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections
 ```
+
+Send email alerts for newly discovered 8-K, 10-Q, or 10-K filings:
+
+```bash
+python3 -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections --send-alerts
+```
+
+Users can subscribe from the dashboard by entering an email address for the selected ticker. Alert delivery requires SMTP configuration:
+
+```env
+FINSIGHT_SEND_ALERTS=1
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_TLS=1
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM=alerts@example.com
+```
+
+If SMTP is not configured, the refresh job skips email delivery and logs that alerts were not sent.
 
 Equivalent environment switches:
 
 ```env
 FINSIGHT_DAILY_LOAD_8K=1
+FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS=1
+# Backward-compatible alias:
 FINSIGHT_DAILY_LOAD_10K_SECTIONS=1
+FINSIGHT_SEND_ALERTS=1
 ```
 
-For GitHub Actions, store credentials in repository secrets. A daily job step can look like:
+The repository includes `.github/workflows/main.yml`, which runs this refresh daily and can also be triggered manually from GitHub Actions. It refreshes:
+
+- rolling stock prices and trading volume
+- S&P 500 benchmark prices
+- current-year 10-Q/10-K MD&A and Risk sections
+- current-year 8-K metadata
+
+For GitHub Actions, store at least these repository secrets:
+
+```text
+DATABASE_URL
+SEC_USER_AGENT
+```
+
+Optional secret:
+
+```text
+FINSIGHT_TICKERS
+SMTP_HOST
+SMTP_PORT
+SMTP_TLS
+SMTP_USERNAME
+SMTP_PASSWORD
+SMTP_FROM
+```
+
+If `FINSIGHT_TICKERS` is not set, the workflow uses `sp500`.
+
+The workflow command is:
 
 ```yaml
 - name: Refresh FinSight data
   env:
     DATABASE_URL: ${{ secrets.DATABASE_URL }}
-    SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+    SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
     FINSIGHT_END_DATE: today
     FINSIGHT_DAILY_REFRESH_DAYS: 10
+    FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS || 'sp500' }}
     FINSIGHT_DAILY_LOAD_8K: "1"
-    FINSIGHT_DAILY_LOAD_10K_SECTIONS: "0"
-  run: python data_ingestiion/daily_refresh.py
+    FINSIGHT_DAILY_LOAD_PERIODIC_SECTIONS: "1"
+    FINSIGHT_LOAD_8K_DETAILS: "0"
+  run: python -m data_ingestiion.daily_refresh --with-8k --with-periodic-sections
 ```
 
-## Run The Dashboard
+## Run The App
 
-Start the Dash app locally:
+Start the FastAPI backend:
 
 ```bash
-python3 app/dashoboard.py
+uvicorn backend.main:app --reload --port 8000
 ```
 
-Open the local Dash URL, normally:
+Start the React dev server in a second terminal:
+
+```bash
+npm run dev --prefix frontend
+```
+
+Open the Vite URL, normally:
+
+```bash
+http://127.0.0.1:5173
+```
+
+Vite proxies `/api` requests to FastAPI locally. Build the frontend for one-service deployment:
+
+```bash
+npm run build --prefix frontend
+uvicorn backend.main:app --port 8000
+```
+
+When `frontend/dist` exists, FastAPI serves the React build at `http://127.0.0.1:8000`.
+
+## API
+
+The UI uses two FastAPI endpoints:
 
 ```text
-http://127.0.0.1:8050
+GET /api/bootstrap
+GET /api/dashboard?ticker=AAPL&start=2023-01-01&end=2026-05-21
 ```
 
-For a production WSGI server, use:
-
-```bash
-gunicorn wsgi:server
-```
+FastAPI interactive API docs are available locally at `/docs`.
 
 ## Deployment
 
-Deploy the Dash app with a Python environment that installs `requirements.txt`, provides the database and SEC environment variables, and starts:
+The migration branch includes `render.yaml` for a new staging Render service. It installs Python dependencies, installs and builds the React frontend, then starts:
 
 ```bash
-gunicorn wsgi:server
+uvicorn backend.main:app --host 0.0.0.0 --port $PORT
 ```
 
-Store `DATABASE_URL`, `SEC_USER_AGENT`, and optional OpenAI variables in the hosting provider's environment settings.
+Keep the current Dash Render service linked to `main` until the React/FastAPI staging service is verified. Store `DATABASE_URL`, `SEC_USER_AGENT`, and optional OpenAI variables in Render environment settings.
 
 ## Tests
 

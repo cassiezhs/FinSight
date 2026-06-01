@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Full Data Ingestion Script:
-- Fetches SEC 10-K Risk & MD&A sections (via fetch_sec.py)
+- Fetches SEC 10-Q/10-K Risk & MD&A sections (via fetch_sec.py)
 - Fetches stock prices & S&P 500 index (via yfinance)
 - Writes everything to PostgreSQL with de-duplication
 
@@ -27,7 +27,7 @@ try:
     from .config import TICKERS, next_date, resolve_date, settings
     from .db import get_engine
     from .fetch_sec import (
-        get_cik, get_10k_meta_for_year, get_10k_html_url,
+        get_cik, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
         extract_risk_from_main_html, extract_mdna_from_main_html,
         get_8k_meta, extract_8k_detail_preview,
     )
@@ -35,7 +35,7 @@ except ImportError:
     from config import TICKERS, next_date, resolve_date, settings
     from db import get_engine
     from fetch_sec import (
-        get_cik, get_10k_meta_for_year, get_10k_html_url,
+        get_cik, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
         extract_risk_from_main_html, extract_mdna_from_main_html,
         get_8k_meta, extract_8k_detail_preview,
     )
@@ -132,12 +132,39 @@ def get_max_market_date(engine) -> str | None:
     return pd.to_datetime(result).date().isoformat()
 
 
-def get_daily_start_date(engine, fallback_start_date: str, refresh_days: int) -> str:
-    latest_date = get_max_market_date(engine)
-    if latest_date is None:
+def get_ticker_latest_market_dates(engine) -> dict[str, str]:
+    inspector = inspect(engine)
+    if not inspector.has_table("stock_prices", schema=DB_SCHEMA):
+        return {}
+
+    query = text(f'SELECT ticker, MAX("Date") AS latest_date FROM {_qualified("stock_prices")} GROUP BY ticker')
+    with engine.begin() as conn:
+        rows = conn.execute(query).mappings().all()
+
+    return {
+        str(row["ticker"]).upper(): pd.to_datetime(row["latest_date"]).date().isoformat()
+        for row in rows
+        if row["ticker"] and row["latest_date"] is not None
+    }
+
+
+def get_daily_start_date(
+    engine,
+    fallback_start_date: str,
+    refresh_days: int,
+    tickers: tuple[str, ...] | None = None,
+) -> str:
+    latest_dates = get_ticker_latest_market_dates(engine)
+    if not latest_dates:
         return fallback_start_date
 
-    start = datetime.strptime(latest_date, "%Y-%m-%d").date() - timedelta(days=refresh_days)
+    expected_tickers = {ticker.upper() for ticker in (tickers or latest_dates.keys())}
+    covered_dates = [latest_dates[ticker] for ticker in expected_tickers if ticker in latest_dates]
+    if not covered_dates:
+        return fallback_start_date
+
+    earliest_latest_date = min(covered_dates)
+    start = datetime.strptime(earliest_latest_date, "%Y-%m-%d").date() - timedelta(days=refresh_days)
     return start.isoformat()
 
 
@@ -177,8 +204,8 @@ def fetch_sp500_data(start_date, end_date):
         return pd.DataFrame()
 
 # --------------- SEC Data ---------------
-def collect_sec_sections(tickers, start_year, end_year):
-    """Collect Risk and MD&A sections for all tickers."""
+def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, ...] = ("10-K", "10-Q")):
+    """Collect Risk and MD&A sections for all tickers and selected periodic filing forms."""
     rows_risk, rows_mdna = [], []
     for tkr in tickers:
         cik = get_cik(tkr)
@@ -186,44 +213,47 @@ def collect_sec_sections(tickers, start_year, end_year):
             print(f"⚠️ No CIK for {tkr}")
             continue
         for yr in range(start_year, end_year + 1):
-            try:
-                idx_url, filing_date = get_10k_meta_for_year(cik, yr)
-                if not idx_url:
-                    continue
-                html_url = get_10k_html_url(idx_url)
-                if not html_url:
-                    continue
-                time.sleep(0.25)  # polite to SEC servers
+            for form_type in form_types:
+                try:
+                    idx_url, filing_date, found_form = get_filing_meta_for_year(cik, yr, (form_type,))
+                    if not idx_url:
+                        continue
+                    html_url = get_10k_html_url(idx_url)
+                    if not html_url:
+                        continue
+                    time.sleep(0.25)  # polite to SEC servers
 
-                risk = extract_risk_from_main_html(html_url)
-                mdna = extract_mdna_from_main_html(html_url)
-                company_name = None
-                if "Alphabet" in risk or "Alphabet" in mdna:
-                    company_name = "Alphabet Inc."
-                elif "Apple" in risk or "Apple" in mdna:
-                    company_name = "Apple Inc."
-                else:
-                    company_name = f"{tkr} Corp."
+                    risk = extract_risk_from_main_html(html_url)
+                    mdna = extract_mdna_from_main_html(html_url, found_form or form_type)
+                    company_name = None
+                    if "Alphabet" in risk or "Alphabet" in mdna:
+                        company_name = "Alphabet Inc."
+                    elif "Apple" in risk or "Apple" in mdna:
+                        company_name = "Apple Inc."
+                    else:
+                        company_name = f"{tkr} Corp."
 
-                rows_risk.append({
-                    "cik": cik,
-                    "company_name": company_name,
-                    "filing_date": filing_date,
-                    "content": risk,
-                    "chunk_index": 0,
-                    "ticker": tkr,
-                })
-                rows_mdna.append({
-                    "cik": cik,
-                    "company_name": company_name,
-                    "filing_date": filing_date,
-                    "content": mdna,
-                    "chunk_index": 0,
-                    "ticker": tkr,
-                })
-            except Exception as e:
-                print(f"❌ Error {tkr} {yr}: {e}")
-                continue
+                    rows_risk.append({
+                        "cik": cik,
+                        "company_name": company_name,
+                        "filing_date": filing_date,
+                        "form_type": found_form or form_type,
+                        "content": risk,
+                        "chunk_index": 0,
+                        "ticker": tkr,
+                    })
+                    rows_mdna.append({
+                        "cik": cik,
+                        "company_name": company_name,
+                        "filing_date": filing_date,
+                        "form_type": found_form or form_type,
+                        "content": mdna,
+                        "chunk_index": 0,
+                        "ticker": tkr,
+                    })
+                except Exception as e:
+                    print(f"❌ Error {tkr} {yr} {form_type}: {e}")
+                    continue
 
     df_risk = pd.DataFrame(rows_risk)
     df_mdna = pd.DataFrame(rows_mdna)
@@ -233,11 +263,46 @@ def collect_sec_sections(tickers, start_year, end_year):
     return df_risk, df_mdna
 
 def upsert_sections(df, engine, table):
-    """Upsert section data by (cik, filing_date, chunk_index)."""
+    """Upsert section data by (cik, filing_date, form_type, chunk_index)."""
     if df.empty:
         print(f"⚠️ No rows to insert for {table}")
         return
-    append_on_conflict_do_nothing(df, table, engine, ["cik", "filing_date", "chunk_index"])
+    ensure_section_table_columns(engine, table)
+    key_columns = ["cik", "filing_date", "form_type", "chunk_index"]
+    _ensure_unique_index(engine, table, key_columns)
+
+    tmp_name = f"_tmp_{table}_{uuid.uuid4().hex[:8]}"
+    df.to_sql(tmp_name, engine, schema=DB_SCHEMA, if_exists="fail", index=False)
+
+    cols = list(df.columns)
+    col_sql = ", ".join(_quote_identifier(c) for c in cols)
+    conflict_sql = ", ".join(_quote_identifier(c) for c in key_columns)
+    update_cols = [c for c in cols if c not in key_columns]
+    update_sql = ", ".join(
+        f"{_quote_identifier(c)} = EXCLUDED.{_quote_identifier(c)}"
+        for c in update_cols
+    )
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(text(
+                f"INSERT INTO {_qualified(table)} ({col_sql}) "
+                f"SELECT {col_sql} FROM {_qualified(tmp_name)} "
+                f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {update_sql}"
+            ))
+        print(f"✅ Upserted {result.rowcount} rows into {DB_SCHEMA}.{table}")
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text(f"DROP TABLE IF EXISTS {_qualified(tmp_name)}"))
+
+
+def ensure_section_table_columns(engine, table_name: str):
+    if not inspect(engine).has_table(table_name, schema=DB_SCHEMA):
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            f"ALTER TABLE {_qualified(table_name)} "
+            "ADD COLUMN IF NOT EXISTS form_type TEXT DEFAULT '10-K'"
+        ))
 
 
 def collect_8k_filings(tickers, start_year, end_year):
@@ -378,7 +443,7 @@ if __name__ == "__main__":
     end_date = resolve_date(args.end_date)
     start_date = args.start_date
     if args.daily:
-        start_date = get_daily_start_date(engine, settings.start_date, args.refresh_days)
+        start_date = get_daily_start_date(engine, settings.start_date, args.refresh_days, TICKERS)
 
     # --- 1. Stock & Benchmark ---
     combined_df, sp500_df = load_market_data(engine, start_date, end_date)
