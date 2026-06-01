@@ -1,4 +1,4 @@
-name: Daily FinSight Data Refresh
+name: Daily FinSight Data Refresh v2
 
 on:
   schedule:
@@ -17,6 +17,11 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Show files
+        run: |
+          pwd
+          find . -maxdepth 4 -type f | sort
 
       - name: Set up Python
         uses: actions/setup-python@v5
