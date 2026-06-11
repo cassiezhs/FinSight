@@ -34,7 +34,7 @@ jobs:
       - name: Run daily refresh
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'MISSING - Add SEC_USER_AGENT secret to GitHub' }}
           FINSIGHT_END_DATE: today
           FINSIGHT_DAILY_REFRESH_DAYS: 10
           FINSIGHT_TICKERS: ${{ secrets.FINSIGHT_TICKERS || 'sp500' }}

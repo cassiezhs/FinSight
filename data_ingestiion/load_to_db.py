@@ -265,6 +265,7 @@ def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, .
     for df in [df_risk, df_mdna]:
         if not df.empty:
             df["filing_date"] = pd.to_datetime(df["filing_date"], errors="coerce")
+            df.drop_duplicates(subset=["cik", "filing_date", "form_type", "chunk_index"], inplace=True)
     return df_risk, df_mdna
 
 def upsert_sections(df, engine, table):

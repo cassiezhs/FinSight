@@ -53,7 +53,7 @@ class Settings:
     db_name: str | None = os.getenv("DB_NAME")
     db_schema: str = os.getenv("DB_SCHEMA", "public")
     db_sslmode: str | None = os.getenv("DB_SSLMODE")
-    sec_user_agent: str = os.getenv("SEC_USER_AGENT", "FinSight/0.1 contact@example.com")
+    sec_user_agent: str = os.getenv("SEC_USER_AGENT") or ""
     start_date: str = os.getenv("FINSIGHT_START_DATE", "2018-01-01")
     end_date: str = os.getenv("FINSIGHT_END_DATE", "today")
     start_year: int = int(os.getenv("FINSIGHT_START_YEAR", "2018"))

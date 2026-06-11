@@ -11,6 +11,13 @@ try:
 except ImportError:
     from config import TICKERS, settings
 
+if not settings.sec_user_agent:
+    raise ValueError(
+        "SEC_USER_AGENT environment variable is required.\n"
+        "Set it to: FinSight/1.0 your-email@example.com\n"
+        "See SEC EDGAR terms of use: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+    )
+
 UA = {
     "User-Agent": settings.sec_user_agent,
     "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
