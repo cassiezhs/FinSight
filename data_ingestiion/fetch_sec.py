@@ -1,5 +1,8 @@
 # fetch_sec.py
 import re
+import time
+from functools import lru_cache
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -8,7 +11,12 @@ try:
 except ImportError:
     from config import TICKERS, settings
 
-UA = {"User-Agent": settings.sec_user_agent}
+UA = {
+    "User-Agent": settings.sec_user_agent,
+    "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+}
+SEC_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
 
 SEC_8K_ITEM_DESCRIPTIONS = {
     "1.01": "Entry into a Material Definitive Agreement",
@@ -252,15 +260,31 @@ def extract_8k_detail_preview(
 
 # ---------------- SEC helpers ---------------- #
 
+@lru_cache(maxsize=1)
+def get_company_ticker_ciks() -> dict[str, str]:
+    """Fetch the SEC ticker directory once per process and cache failures too."""
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(SEC_TICKER_URL, headers=UA, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                str(item["ticker"]).upper(): str(item["cik_str"]).zfill(10)
+                for item in data.values()
+                if item.get("ticker") and item.get("cik_str") is not None
+            }
+        except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(2**attempt)
+
+    print(f"⚠️ SEC ticker directory unavailable; skipping SEC filing refresh: {last_error}")
+    return {}
+
+
 def get_cik(ticker: str) -> str | None:
-    url = "https://www.sec.gov/files/company_tickers.json"
-    resp = requests.get(url, headers=UA, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    for item in data.values():
-        if item["ticker"].lower() == ticker.lower():
-            return str(item["cik_str"]).zfill(10)
-    return None
+    return get_company_ticker_ciks().get(ticker.upper())
 
 def get_filing_meta_for_year(cik: str, year: int, form_types: tuple[str, ...]) -> tuple[str | None, str | None, str | None]:
     """Return (index.json URL, filingDate, formType) for the first matching form filed in a year."""

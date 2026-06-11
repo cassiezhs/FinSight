@@ -27,7 +27,7 @@ try:
     from .config import TICKERS, next_date, resolve_date, settings
     from .db import get_engine
     from .fetch_sec import (
-        get_cik, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
+        get_company_ticker_ciks, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
         extract_risk_from_main_html, extract_mdna_from_main_html,
         get_8k_meta, extract_8k_detail_preview,
     )
@@ -35,7 +35,7 @@ except ImportError:
     from config import TICKERS, next_date, resolve_date, settings
     from db import get_engine
     from fetch_sec import (
-        get_cik, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
+        get_company_ticker_ciks, get_10k_meta_for_year, get_filing_meta_for_year, get_10k_html_url,
         extract_risk_from_main_html, extract_mdna_from_main_html,
         get_8k_meta, extract_8k_detail_preview,
     )
@@ -207,8 +207,13 @@ def fetch_sp500_data(start_date, end_date):
 def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, ...] = ("10-K", "10-Q")):
     """Collect Risk and MD&A sections for all tickers and selected periodic filing forms."""
     rows_risk, rows_mdna = [], []
+    cik_by_ticker = get_company_ticker_ciks()
+    if not cik_by_ticker:
+        print("⚠️ Skipping 10-Q/10-K sections because the SEC ticker directory is unavailable.")
+        return pd.DataFrame(), pd.DataFrame()
+
     for tkr in tickers:
-        cik = get_cik(tkr)
+        cik = cik_by_ticker.get(tkr.upper())
         if not cik:
             print(f"⚠️ No CIK for {tkr}")
             continue
@@ -308,9 +313,14 @@ def ensure_section_table_columns(engine, table_name: str):
 def collect_8k_filings(tickers, start_year, end_year):
     rows = []
     include_details = os.getenv("FINSIGHT_LOAD_8K_DETAILS", "1") == "1"
+    cik_by_ticker = get_company_ticker_ciks()
+    if not cik_by_ticker:
+        print("⚠️ Skipping 8-K filings because the SEC ticker directory is unavailable.")
+        return pd.DataFrame()
+
     for tkr in tickers:
         try:
-            cik = get_cik(tkr)
+            cik = cik_by_ticker.get(tkr.upper())
             if not cik:
                 print(f"⚠️ No CIK for {tkr}")
                 continue
