@@ -265,7 +265,10 @@ def collect_sec_sections(tickers, start_year, end_year, form_types: tuple[str, .
     for df in [df_risk, df_mdna]:
         if not df.empty:
             df["filing_date"] = pd.to_datetime(df["filing_date"], errors="coerce")
-            df.drop_duplicates(subset=["cik", "filing_date", "form_type", "chunk_index"], inplace=True)
+    if not df_risk.empty:
+        df_risk = df_risk.drop_duplicates(subset=["cik", "filing_date", "form_type", "chunk_index"])
+    if not df_mdna.empty:
+        df_mdna = df_mdna.drop_duplicates(subset=["cik", "filing_date", "form_type", "chunk_index"])
     return df_risk, df_mdna
 
 def upsert_sections(df, engine, table):
@@ -273,8 +276,15 @@ def upsert_sections(df, engine, table):
     if df.empty:
         print(f"⚠️ No rows to insert for {table}")
         return
-    ensure_section_table_columns(engine, table)
     key_columns = ["cik", "filing_date", "form_type", "chunk_index"]
+
+    duplicates = df[df.duplicated(subset=key_columns, keep=False)]
+    if not duplicates.empty:
+        print(f"❌ Found {len(duplicates)} duplicate rows in {table} by key {key_columns}")
+        print(duplicates[key_columns].drop_duplicates())
+        raise ValueError(f"Cannot upsert {table}: duplicate key values detected")
+
+    ensure_section_table_columns(engine, table)
     _ensure_unique_index(engine, table, key_columns)
 
     tmp_name = f"_tmp_{table}_{uuid.uuid4().hex[:8]}"
