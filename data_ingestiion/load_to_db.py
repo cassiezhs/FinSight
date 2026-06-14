@@ -278,11 +278,10 @@ def upsert_sections(df, engine, table):
         return
     key_columns = ["cik", "filing_date", "form_type", "chunk_index"]
 
-    duplicates = df[df.duplicated(subset=key_columns, keep=False)]
-    if not duplicates.empty:
-        print(f"❌ Found {len(duplicates)} duplicate rows in {table} by key {key_columns}")
-        print(duplicates[key_columns].drop_duplicates())
-        raise ValueError(f"Cannot upsert {table}: duplicate key values detected")
+    duplicate_count = int(df.duplicated(subset=key_columns, keep="last").sum())
+    if duplicate_count:
+        print(f"⚠️ Dropping {duplicate_count} duplicate {table} rows by key {key_columns}")
+        df = df.drop_duplicates(subset=key_columns, keep="last").copy()
 
     ensure_section_table_columns(engine, table)
     _ensure_unique_index(engine, table, key_columns)
