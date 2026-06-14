@@ -1,10 +1,10 @@
-# PinScheduler
+# FinSight
 
 ## Narrative vs. Market
 
-![PinScheduler dashboard](logo.png)
+![FinSight dashboard](logo.png)
 
-PinScheduler is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-Q/10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
+FinSight is a React and FastAPI application for analyzing whether company filing language aligns with market behavior. It combines SEC 10-Q/10-K narrative changes, 8-K events, daily stock prices, and S&P 500 benchmarks so users can move from raw disclosures to an investor-facing readout.
 
 The dashboard is centered on a practical question:
 
@@ -113,7 +113,7 @@ DB_SCHEMA=public
 Set a real SEC contact user agent before filing ingestion:
 
 ```env
-SEC_USER_AGENT=PinScheduler/0.1 your-email@example.com
+SEC_USER_AGENT=FinSight/0.1 your-email@example.com
 ```
 
 OpenAI is optional:
@@ -258,7 +258,7 @@ If `FINSIGHT_TICKERS` is not set, the workflow uses `sp500`.
 The workflow command is:
 
 ```yaml
-- name: Refresh PinScheduler data
+- name: Refresh FinSight data
   env:
     DATABASE_URL: ${{ secrets.DATABASE_URL }}
     SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
